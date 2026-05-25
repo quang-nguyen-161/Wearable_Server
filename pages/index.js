@@ -4,6 +4,8 @@ import Head from "next/head";
 import VitalCard from "../components/VitalCard";
 import TrendChart from "../components/TrendChart";
 import { useTbWebSocket } from "../hooks/useTbWebSocket";
+import NodeDetailModal from "../components/NodeDetailModal";
+import VitalHistoryModal from "../components/VitalHistoryModal";
 
 /* ── Vital definitions ─────────────────────────────────────────────── */
 const VITALS = [
@@ -47,6 +49,8 @@ export default function Dashboard() {
   const [theme,            setTheme]            = useState("light");
   const [tbToken,          setTbToken]          = useState(null);
   const [deviceAlerts,     setDeviceAlerts]     = useState({});
+  const [modalDevice,      setModalDevice]      = useState(null);
+  const [vitalModal,       setVitalModal]       = useState(null); // { vitalKey }
 
   /* ── Fetch TB token for WebSocket ── */
   useEffect(() => {
@@ -221,26 +225,34 @@ export default function Dashboard() {
                 const isSelected = device.id === selectedDeviceId;
                 const hasAlert = deviceAlerts[device.id];
                 return (
-                  <button
-                    key={device.id}
-                    className={`device-card ${isSelected ? "device-card--active" : ""} ${hasAlert ? "device-card--alert" : ""}`}
-                    onClick={() => setSelectedDeviceId(device.id)}
-                    title={device.label || device.name}
-                  >
-                    <div className="device-card-top">
-                      <span className="device-icon">
-                        {hasAlert ? "⚠" : "📡"}
-                      </span>
-                      {hasAlert && <span className="alert-dot" />}
-                    </div>
-                    <div className="device-card-name">{device.name || device.id}</div>
-                    {device.label && (
-                      <div className="device-card-sub">{device.label}</div>
-                    )}
-                    <div className={`device-online-pill ${device.online === false ? "offline" : ""}`}>
-                      {device.online === false ? "OFFLINE" : "LIVE"}
-                    </div>
-                  </button>
+                  <div key={device.id} className="device-card-wrapper">
+                    <button
+                      className={`device-card ${isSelected ? "device-card--active" : ""} ${hasAlert ? "device-card--alert" : ""}`}
+                      onClick={() => setSelectedDeviceId(device.id)}
+                      title={device.label || device.name}
+                    >
+                      <div className="device-card-top">
+                        <span className="device-icon">
+                          {hasAlert ? "⚠" : "📡"}
+                        </span>
+                        {hasAlert && <span className="alert-dot" />}
+                      </div>
+                      <div className="device-card-name">{device.name || device.id}</div>
+                      {device.label && (
+                        <div className="device-card-sub">{device.label}</div>
+                      )}
+                      <div className={`device-online-pill ${device.online === false ? "offline" : ""}`}>
+                        {device.online === false ? "OFFLINE" : "LIVE"}
+                      </div>
+                    </button>
+                    <button
+                      className="device-detail-btn"
+                      onClick={(e) => { e.stopPropagation(); setModalDevice(device); }}
+                      title="View history"
+                    >
+                      ⤢
+                    </button>
+                  </div>
                 );
               })
             )}
@@ -313,20 +325,26 @@ export default function Dashboard() {
           {/* Vital cards */}
           {selectedDeviceId &&
             VITALS.map((v, i) => (
-              <VitalCard
+              <div
                 key={`${selectedDeviceId}-${v.key}`}
-                label={v.label}
-                icon={v.icon}
-                unit={v.unit}
-                color={v.color}
-                min={v.min}
-                max={v.max}
-                critMin={v.critMin}
-                critMax={v.critMax}
-                value={getValue(v.key)}
-                loading={!connected && !getValue(v.key)}
-                animDelay={i * 60}
-              />
+                onClick={() => setVitalModal({ vitalKey: v.key })}
+                style={{ cursor: "pointer" }}
+                title="Click to view history"
+              >
+                <VitalCard
+                  label={v.label}
+                  icon={v.icon}
+                  unit={v.unit}
+                  color={v.color}
+                  min={v.min}
+                  max={v.max}
+                  critMin={v.critMin}
+                  critMax={v.critMax}
+                  value={getValue(v.key)}
+                  loading={!connected && !getValue(v.key)}
+                  animDelay={i * 60}
+                />
+              </div>
             ))}
 
           {/* ECG Signal */}
@@ -353,6 +371,25 @@ export default function Dashboard() {
         </main>
       </div>
 
+      {/* ── Node detail modal ── */}
+      {modalDevice && (
+        <NodeDetailModal
+          device={modalDevice}
+          vitals={modalDevice.id === selectedDeviceId ? vitals : {}}
+          onClose={() => setModalDevice(null)}
+        />
+      )}
+
+      {/* ── Vital history modal ── */}
+      {vitalModal && selectedDeviceId && (
+        <VitalHistoryModal
+          vitalKey={vitalModal.vitalKey}
+          deviceId={selectedDeviceId}
+          currentValue={getValue(vitalModal.vitalKey)}
+          onClose={() => setVitalModal(null)}
+        />
+      )}
+
       {/* ── Device Selector Styles ── */}
       <style jsx>{`
         /* ── Light mode base ── */
@@ -364,6 +401,38 @@ export default function Dashboard() {
           background: #f5f7fa;
           border-bottom: 1px solid #e2e8f0;
           transition: background 0.2s, border-color 0.2s;
+        }
+
+        .device-card-wrapper {
+          position: relative;
+          display: inline-flex;
+          flex-direction: column;
+          align-items: center;
+        }
+
+        .device-detail-btn {
+          position: absolute;
+          top: 4px;
+          right: 4px;
+          width: 18px;
+          height: 18px;
+          font-size: 12px;
+          line-height: 1;
+          display: flex;
+          align-items: center;
+          justify-content: center;
+          background: rgba(0,200,255,0.12);
+          border: none;
+          border-radius: 4px;
+          color: #00c8ff;
+          cursor: pointer;
+          opacity: 0;
+          transition: opacity 0.15s;
+          font-family: inherit;
+        }
+
+        .device-card-wrapper:hover .device-detail-btn {
+          opacity: 1;
         }
 
         .device-selector-label {
