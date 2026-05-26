@@ -1,14 +1,15 @@
 // pages/index.js
 import { useState, useEffect, useCallback, useRef } from "react";
 import Head from "next/head";
+import { useRouter } from "next/router";
 import VitalCard from "../components/VitalCard";
 import TrendChart from "../components/TrendChart";
 import { useTbWebSocket } from "../hooks/useTbWebSocket";
 import NodeDetailModal from "../components/NodeDetailModal";
 import VitalHistoryModal from "../components/VitalHistoryModal";
 
-/* ── Vital definitions ─────────────────────────────────────────────── */
-const VITALS = [
+/* ── Default Vital definitions (fallback if no localStorage) ────────── */
+const DEFAULT_VITALS = [
   {
     key: "heartRate",
     label: "HEART RATE",
@@ -38,8 +39,12 @@ const VITALS = [
   },
 ];
 
+const DEFAULT_INTERVAL_SEC = 10;
+
 /* ── Main component ─────────────────────────────────────────────────── */
 export default function Dashboard() {
+  const router = useRouter();
+
   /* Device list */
   const [devices,          setDevices]          = useState([]);
   const [devicesLoading,   setDevicesLoading]   = useState(true);
@@ -50,7 +55,36 @@ export default function Dashboard() {
   const [tbToken,          setTbToken]          = useState(null);
   const [deviceAlerts,     setDeviceAlerts]     = useState({});
   const [modalDevice,      setModalDevice]      = useState(null);
-  const [vitalModal,       setVitalModal]       = useState(null); // { vitalKey }
+  const [vitalModal,       setVitalModal]       = useState(null);
+
+  /* ── Settings loaded from localStorage ── */
+  const [vitalsConfig,  setVitalsConfig]  = useState(DEFAULT_VITALS);
+  const [intervalSec,   setIntervalSec]   = useState(DEFAULT_INTERVAL_SEC);
+
+  /* ── Load settings from localStorage on mount ── */
+  useEffect(() => {
+    const savedThresholds = localStorage.getItem("vitalThresholds");
+    const savedInterval   = localStorage.getItem("refreshInterval");
+
+    if (savedThresholds) {
+      try {
+        const parsed = JSON.parse(savedThresholds);
+        // Merge saved thresholds into DEFAULT_VITALS (keeps icon/color/unit intact)
+        setVitalsConfig((prev) =>
+          prev.map((v) => {
+            const saved = parsed.find((s) => s.key === v.key);
+            return saved
+              ? { ...v, min: saved.min, max: saved.max, critMin: saved.critMin, critMax: saved.critMax }
+              : v;
+          })
+        );
+      } catch (_) {}
+    }
+
+    if (savedInterval) {
+      setIntervalSec(Number(savedInterval));
+    }
+  }, []);
 
   /* ── Fetch TB token for WebSocket ── */
   useEffect(() => {
@@ -69,18 +103,26 @@ export default function Dashboard() {
     lastUpdate,
   } = useTbWebSocket(selectedDeviceId, tbToken);
 
-  /* ── Track per-device alerts from live vitals ── */
+  /* ── Track per-device alerts using dynamic thresholds ── */
   useEffect(() => {
     if (!selectedDeviceId || !vitals) return;
     const hr   = vitals?.heartRate?.value;
     const spo2 = vitals?.spo2?.value;
     const temp = vitals?.temperature?.value;
+
+    const cfg = {
+      heartRate:   vitalsConfig.find((v) => v.key === "heartRate"),
+      spo2:        vitalsConfig.find((v) => v.key === "spo2"),
+      temperature: vitalsConfig.find((v) => v.key === "temperature"),
+    };
+
     const hasAlert =
-      (hr   != null && (hr < 40 || hr > 130))   ||
-      (spo2 != null && spo2 < 88)                ||
-      (temp != null && (temp < 35.0 || temp > 39.5));
+      (hr   != null && cfg.heartRate   && (hr   < cfg.heartRate.critMin   || hr   > cfg.heartRate.critMax))   ||
+      (spo2 != null && cfg.spo2        && spo2  < cfg.spo2.critMin)                                           ||
+      (temp != null && cfg.temperature && (temp  < cfg.temperature.critMin || temp  > cfg.temperature.critMax));
+
     setDeviceAlerts((prev) => ({ ...prev, [selectedDeviceId]: hasAlert }));
-  }, [vitals, selectedDeviceId]);
+  }, [vitals, selectedDeviceId, vitalsConfig]);
 
   /* ── Fetch device list ── */
   const fetchDevices = useCallback(async () => {
@@ -100,7 +142,7 @@ export default function Dashboard() {
     }
   }, []);
 
-  /* ── Fetch patient info (still HTTP — changes rarely) ── */
+  /* ── Fetch patient info ── */
   const fetchPatient = useCallback(async (deviceId) => {
     if (!deviceId) return;
     try {
@@ -119,7 +161,14 @@ export default function Dashboard() {
     fetchDevices();
   }, []);
 
-  /* ── On device change: fetch patient (WS handles vitals/signals) ── */
+  /* ── Auto-refresh device list using dynamic interval ── */
+  useEffect(() => {
+    const ms = intervalSec * 1000;
+    const id = setInterval(fetchDevices, ms);
+    return () => clearInterval(id);
+  }, [intervalSec, fetchDevices]);
+
+  /* ── On device change ── */
   useEffect(() => {
     if (!selectedDeviceId) return;
     setPatient(null);
@@ -185,6 +234,9 @@ export default function Dashboard() {
               {connected ? "LIVE" : "OFFLINE"}
             </div>
             <span className="last-update">UPDATED {formatTime(lastUpdate)}</span>
+            <span className="interval-indicator" title="Refresh interval">
+              ⏱ {intervalSec}s
+            </span>
             <button
               className="theme-toggle-btn"
               onClick={toggleTheme}
@@ -197,6 +249,13 @@ export default function Dashboard() {
               onClick={fetchDevices}
             >
               ⟳ REFRESH
+            </button>
+            <button
+              className="settings-btn"
+              onClick={() => router.push("/settings")}
+              title="Settings"
+            >
+              ⚙ SETTINGS
             </button>
           </div>
         </header>
@@ -322,9 +381,9 @@ export default function Dashboard() {
             </div>
           )}
 
-          {/* Vital cards */}
+          {/* Vital cards — uses vitalsConfig (dynamic thresholds from settings) */}
           {selectedDeviceId &&
-            VITALS.map((v, i) => (
+            vitalsConfig.map((v, i) => (
               <div
                 key={`${selectedDeviceId}-${v.key}`}
                 onClick={() => setVitalModal({ vitalKey: v.key })}
@@ -390,7 +449,7 @@ export default function Dashboard() {
         />
       )}
 
-      {/* ── Device Selector Styles ── */}
+      {/* ── Styles ── */}
       <style jsx>{`
         /* ── Light mode base ── */
         .device-selector-bar {
@@ -617,6 +676,43 @@ export default function Dashboard() {
           font-weight: 600;
         }
 
+        /* ── Settings button ── */
+        .settings-btn {
+          display: flex;
+          align-items: center;
+          gap: 5px;
+          padding: 6px 13px;
+          border-radius: 8px;
+          border: 1.5px solid #e2e8f0;
+          background: #fff;
+          color: #475569;
+          font-size: 11px;
+          font-weight: 700;
+          letter-spacing: 0.08em;
+          cursor: pointer;
+          font-family: inherit;
+          transition: border-color 0.15s, color 0.15s, background 0.15s, box-shadow 0.15s;
+        }
+
+        .settings-btn:hover {
+          border-color: #00c8ff;
+          color: #00c8ff;
+          background: rgba(0, 200, 255, 0.06);
+          box-shadow: 0 0 0 3px rgba(0, 200, 255, 0.1);
+        }
+
+        /* ── Interval indicator ── */
+        .interval-indicator {
+          font-size: 10px;
+          font-weight: 700;
+          letter-spacing: 0.08em;
+          color: #94a3b8;
+          background: rgba(148, 163, 184, 0.1);
+          border-radius: 6px;
+          padding: 3px 8px;
+          font-family: monospace;
+        }
+
         /* ── Dark mode overrides ── */
         :global([data-theme="dark"]) .device-selector-bar {
           background: #0f172a;
@@ -693,6 +789,23 @@ export default function Dashboard() {
 
         :global([data-theme="dark"]) .no-selection-text {
           color: #475569;
+        }
+
+        :global([data-theme="dark"]) .settings-btn {
+          background: #1e293b;
+          border-color: #334155;
+          color: #94a3b8;
+        }
+
+        :global([data-theme="dark"]) .settings-btn:hover {
+          border-color: #00c8ff;
+          color: #00c8ff;
+          background: rgba(0, 200, 255, 0.08);
+        }
+
+        :global([data-theme="dark"]) .interval-indicator {
+          color: #475569;
+          background: rgba(71, 85, 105, 0.15);
         }
       `}</style>
     </>
