@@ -38,7 +38,7 @@ const VITALS = [
   },
 ];
 
-/* ── Patient Modal ──────────────────────────────────────────────────────── */
+/* ── Patient Modal ────────────────────────────────────────────────────────── */
 function PatientModal({ patient, deviceId, onClose, onSaved }) {
   const [editing, setEditing] = useState(false);
   const [saving,  setSaving]  = useState(false);

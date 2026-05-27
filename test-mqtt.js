@@ -1,168 +1,143 @@
 // simulate-nodes.js
-// Simulates 3 sensor nodes pushing realistic health data to ThingsBoard via MQTT.
-// Each node has slightly different baseline vitals and drift patterns.
+// ECG/PPG strategy:
+//   - Each batch of 20 samples is published as a JSON-encoded array
+//     stored in a SINGLE telemetry key "ecgBatch" / "ppgBatch"
+//   - Each entry in the array has its own timestamp
+//   - The dashboard reads these batches and unpacks them client-side
+//   - This avoids TB rate limits and aggregation destroying the waveform
+//
+// Vitals (HR, SpO2, Temp) are published normally as individual keys.
+//
 // Run: node simulate-nodes.js
 
 const mqtt = require("mqtt");
 
-const GATEWAY_TOKEN = "kouqwqlqiccuev82k6f0";
-const TB_HOST       = "mqtt://thingsboard.cloud";
-const INTERVAL_MS   = 100; // 10 points/sec — fast enough for smooth ECG/PPG // push every 500ms — fast enough to see live ECG/PPG
+const GATEWAY_TOKEN     = "kouqwqlqiccuev82k6f0";
+const TB_HOST           = "mqtt://thingsboard.cloud";
+const SAMPLES_PER_BATCH = 5;    // samples per publish
+const PUBLISH_INTERVAL  = 100;  // ms — TB Cloud free tier needs ≥100ms between publishes
+const SAMPLE_INTERVAL   = PUBLISH_INTERVAL / SAMPLES_PER_BATCH; // 20ms = 50Hz effective
 
-// ── Node baseline profiles ─────────────────────────────────────────────────
+// ── Node profiles ────────────────────────────────────────────────────────
 const NODES = {
-  Node1: {
-    heartRate:   { base: 72,   drift: 8,    min: 55,  max: 110 },
-    spo2:        { base: 98.5, drift: 1.5,  min: 94,  max: 100 },
-    temperature: { base: 36.6, drift: 0.4,  min: 36,  max: 37.5 },
-    ecgPhase:    0,
-    ppgPhase:    0,
-  },
-  Node2: {
-    heartRate:   { base: 88,   drift: 12,   min: 60,  max: 120 },
-    spo2:        { base: 97.2, drift: 2,    min: 93,  max: 100 },
-    temperature: { base: 37.1, drift: 0.5,  min: 36.5, max: 38.5 },
-    ecgPhase:    1.2,
-    ppgPhase:    0.8,
-  },
-  Node3: {
-    heartRate:   { base: 65,   drift: 6,    min: 50,  max: 95 },
-    spo2:        { base: 99.0, drift: 1,    min: 95,  max: 100 },
-    temperature: { base: 36.3, drift: 0.3,  min: 35.8, max: 37.0 },
-    ecgPhase:    2.4,
-    ppgPhase:    1.6,
-  },
+  Node1: { hr: { base:72, drift:8, min:55, max:110 }, spo2: { base:98.5, drift:1.5, min:94, max:100 }, temp: { base:36.6, drift:0.4, min:36, max:37.5 }, ecgPhase:0,   ppgPhase:0   },
+  Node2: { hr: { base:88, drift:12,min:60, max:120 }, spo2: { base:97.2, drift:2,   min:93, max:100 }, temp: { base:37.1, drift:0.5, min:36.5,max:38.5}, ecgPhase:1.2, ppgPhase:0.8 },
+  Node3: { hr: { base:65, drift:6, min:50, max:95  }, spo2: { base:99.0, drift:1,   min:95, max:100 }, temp: { base:36.3, drift:0.3, min:35.8,max:37  }, ecgPhase:2.4, ppgPhase:1.6 },
 };
 
-// ── Waveform generators ────────────────────────────────────────────────────
-
-// Realistic ECG: P wave + QRS complex + T wave
 function ecgSample(phase) {
   const t = phase % (2 * Math.PI);
-  // P wave
-  const p = 0.15 * Math.exp(-Math.pow((t - 0.8), 2) / 0.04);
-  // QRS complex
-  const q = -0.1 * Math.exp(-Math.pow((t - 1.4), 2) / 0.002);
-  const r =  1.0 * Math.exp(-Math.pow((t - 1.57), 2) / 0.001);
-  const s = -0.3 * Math.exp(-Math.pow((t - 1.7), 2) / 0.002);
-  // T wave
-  const tw = 0.3 * Math.exp(-Math.pow((t - 2.5), 2) / 0.1);
-  // Noise
-  const noise = (Math.random() - 0.5) * 0.02;
-  return parseFloat((p + q + r + s + tw + noise).toFixed(4));
+  return parseFloat((
+    0.15 * Math.exp(-Math.pow(t-0.8,  2)/0.04)  +
+   -0.10 * Math.exp(-Math.pow(t-1.4,  2)/0.002) +
+    1.00 * Math.exp(-Math.pow(t-1.57, 2)/0.001) +
+   -0.30 * Math.exp(-Math.pow(t-1.7,  2)/0.002) +
+    0.30 * Math.exp(-Math.pow(t-2.5,  2)/0.1)   +
+    (Math.random()-0.5)*0.02
+  ).toFixed(4));
 }
 
-// PPG: smooth sine-like pulse wave
 function ppgSample(phase) {
   const t = phase % (2 * Math.PI);
-  const systolic  = 0.8 * Math.exp(-Math.pow((t - 1.2), 2) / 0.08);
-  const dicrotic  = 0.2 * Math.exp(-Math.pow((t - 2.2), 2) / 0.06);
-  const noise     = (Math.random() - 0.5) * 0.01;
-  return parseFloat(Math.max(0, systolic + dicrotic + noise).toFixed(4));
+  return parseFloat(Math.max(0,
+    0.8 * Math.exp(-Math.pow(t-1.2, 2)/0.08) +
+    0.2 * Math.exp(-Math.pow(t-2.2, 2)/0.06) +
+    (Math.random()-0.5)*0.01
+  ).toFixed(4));
 }
 
-// Slowly drifting vital (random walk clamped to range)
-function driftValue(current, profile) {
-  const step = (Math.random() - 0.5) * profile.drift * 0.05;
-  const next = current + step;
-  return parseFloat(Math.min(profile.max, Math.max(profile.min, next)).toFixed(1));
+function drift(v, p) {
+  return parseFloat(Math.min(p.max, Math.max(p.min, v + (Math.random()-0.5)*p.drift*0.05)).toFixed(1));
 }
 
-// ── State ──────────────────────────────────────────────────────────────────
+const ECG_SPEED = (2*Math.PI) / (1000/SAMPLE_INTERVAL*0.8);
+const PPG_SPEED = (2*Math.PI) / (1000/SAMPLE_INTERVAL*0.9);
+
 const state = {};
-for (const [name, profile] of Object.entries(NODES)) {
-  state[name] = {
-    heartRate:   profile.heartRate.base,
-    spo2:        profile.spo2.base,
-    temperature: profile.temperature.base,
-    ecgPhase:    profile.ecgPhase,
-    ppgPhase:    profile.ppgPhase,
-  };
+for (const [n, p] of Object.entries(NODES)) {
+  state[n] = { hr: p.hr.base, spo2: p.spo2.base, temp: p.temp.base, ecgPhase: p.ecgPhase, ppgPhase: p.ppgPhase };
 }
 
-// Phase increment per tick based on interval and ~1Hz heart rate base
-const ECG_SPEED = (2 * Math.PI) / (1000 / INTERVAL_MS * 0.8); // ~0.8s per cycle
-const PPG_SPEED = (2 * Math.PI) / (1000 / INTERVAL_MS * 0.9);
+let tick = 0;
 
-let tickCount = 0;
-
-// ── MQTT ───────────────────────────────────────────────────────────────────
-const client = mqtt.connect(TB_HOST, {
-  username: GATEWAY_TOKEN,
-  clean: true,
-  reconnectPeriod: 3000,
-});
+const client = mqtt.connect(TB_HOST, { username: GATEWAY_TOKEN, clean: true, reconnectPeriod: 3000 });
 
 client.on("connect", () => {
-  console.log("✅ Connected to ThingsBoard\n");
-
-  // Register all nodes first
-  const connectPayload = JSON.stringify(
-    Object.fromEntries(Object.keys(NODES).map((n) => [n, { type: "default" }]))
+  console.log("✅ Connected\n");
+  client.publish(
+    "v1/gateway/connect",
+    JSON.stringify(Object.fromEntries(Object.keys(NODES).map(n => [n, { type:"default" }]))),
+    {},
+    () => {
+      console.log(`📡 Registered: ${Object.keys(NODES).join(", ")}`);
+      console.log(`🔄 ${SAMPLES_PER_BATCH} samples/batch, ${PUBLISH_INTERVAL}ms interval, ${1000/SAMPLE_INTERVAL}Hz effective\n`);
+      startLoop();
+    }
   );
-  client.publish("v1/gateway/connect", connectPayload, {}, (err) => {
-    if (err) return console.error("❌ Register error:", err.message);
-    console.log(`📡 Registered: ${Object.keys(NODES).join(", ")}`);
-    console.log(`🔄 Pushing telemetry every ${INTERVAL_MS}ms...\n`);
-    startSimulation();
-  });
 });
 
-// ── Simulation loop ────────────────────────────────────────────────────────
-function startSimulation() {
+function startLoop() {
   setInterval(() => {
-    const now     = Date.now();
+    tick++;
     const payload = {};
-    tickCount++;
+    const now = Date.now();
 
-    for (const [name, profile] of Object.entries(NODES)) {
-      const s = state[name];
+    for (const [nodeName, profile] of Object.entries(NODES)) {
+      const s = state[nodeName];
 
-      // Update waveform phases
-      s.ecgPhase += ECG_SPEED;
-      s.ppgPhase += PPG_SPEED;
-
-      // Drift vitals slowly (update every ~2s = 4 ticks at 500ms)
-      if (tickCount % 4 === 0) {
-        s.heartRate   = driftValue(s.heartRate,   profile.heartRate);
-        s.spo2        = driftValue(s.spo2,        profile.spo2);
-        s.temperature = driftValue(s.temperature, profile.temperature);
+      // Drift vitals every ~1s (every 10 ticks at 100ms)
+      if (tick % 10 === 0) {
+        s.hr   = drift(s.hr,   profile.hr);
+        s.spo2 = drift(s.spo2, profile.spo2);
+        s.temp = drift(s.temp, profile.temp);
       }
 
-      payload[name] = [{
-        ts: now,
-        values: {
-          heartRate:   s.heartRate,
-          spo2:        s.spo2,
-          temperature: s.temperature,
-          ecg:         ecgSample(s.ecgPhase),
-          ppg:         ppgSample(s.ppgPhase),
-        },
-      }];
+      // Build samples array in native TB Gateway format:
+      // [{ts, values: {ecg, ppg}}, {ts, values: {ecg, ppg}}, ...]
+      // TB stores each entry as a separate time-series record.
+      const samples = [];
+
+      for (let i = 0; i < SAMPLES_PER_BATCH; i++) {
+        const ts = now - (SAMPLES_PER_BATCH - 1 - i) * SAMPLE_INTERVAL;
+        s.ecgPhase += ECG_SPEED;
+        s.ppgPhase += PPG_SPEED;
+
+        const entry = {
+          ts,
+          values: {
+            ecg: ecgSample(s.ecgPhase),
+            ppg: ppgSample(s.ppgPhase),
+          },
+        };
+
+        // Attach vitals only to the first sample of each batch
+        if (i === 0) {
+          entry.values.heartRate   = s.hr;
+          entry.values.spo2        = s.spo2;
+          entry.values.temperature = s.temp;
+        }
+
+        samples.push(entry);
+      }
+
+      payload[nodeName] = samples;
     }
 
     client.publish("v1/gateway/telemetry", JSON.stringify(payload), {}, (err) => {
       if (err) console.error("❌ Publish error:", err.message);
     });
 
-    // Log summary every 2s
-    if (tickCount % 4 === 0) {
+    if (tick % 10 === 0) {
       console.clear();
-      console.log(`🕐 ${new Date().toLocaleTimeString()}  |  tick #${tickCount}\n`);
-      for (const [name, s] of Object.entries(state)) {
-        console.log(
-          `  ${name}  HR: ${s.heartRate} bpm  SpO₂: ${s.spo2}%  Temp: ${s.temperature}°C`
-        );
+      console.log(`🕐 ${new Date().toLocaleTimeString()}  tick #${tick}\n`);
+      for (const [n, s] of Object.entries(state)) {
+        console.log(`  ${n}  HR: ${s.hr} bpm  SpO₂: ${s.spo2}%  Temp: ${s.temp}°C`);
       }
       console.log("\n[Ctrl+C to stop]");
     }
-  }, INTERVAL_MS);
+  }, PUBLISH_INTERVAL);
 }
 
-client.on("error",   (err) => console.error("❌ MQTT error:", err.message));
-client.on("offline", ()    => console.warn("⚠️  Offline, reconnecting..."));
-
-process.on("SIGINT", () => {
-  console.log("\n👋 Stopping simulation...");
-  client.end(true, () => process.exit(0));
-});
+client.on("error",   e => console.error("❌", e.message));
+client.on("offline", () => console.warn("⚠️  Reconnecting..."));
+process.on("SIGINT", () => { client.end(true, () => process.exit(0)); });

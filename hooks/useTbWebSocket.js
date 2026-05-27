@@ -84,11 +84,12 @@ export function useTbWebSocket(deviceId, tbToken) {
         }
       }
 
-      // ECG / PPG — accumulate ALL points from this message
-      for (const [ts, val] of (data.ecg || [])) {
+      // ECG / PPG — TB sends all timestamps in the subscription update.
+      // data["ecg"] = [[ts1, val1], [ts2, val2], ...] — all samples in the batch
+      for (const [ts, val] of (data["ecg"] || [])) {
         pendingEcg.current.push({ ts, value: parseFloat(val) });
       }
-      for (const [ts, val] of (data.ppg || [])) {
+      for (const [ts, val] of (data["ppg"] || [])) {
         pendingPpg.current.push({ ts, value: parseFloat(val) });
       }
 
