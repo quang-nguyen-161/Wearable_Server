@@ -12,7 +12,9 @@ A comprehensive A-Z guide for modifying and extending the HealthMonitor applicat
 4. [CSS System](#css-system)
 5. [Adding New Features](#adding-new-features)
 6. [Common Modifications](#common-modifications)
-7. [Troubleshooting](#troubleshooting)
+7. [OTA Firmware Update](#ota-firmware-update)
+8. [Notifications & Alerts](#notifications--alerts)
+9. [Troubleshooting](#troubleshooting)
 
 ---
 
@@ -30,6 +32,12 @@ The HealthMonitor is a **Next.js React application** that displays real-time hea
 **Key Features:**
 - Real-time vital sign monitoring (Heart Rate, SpO₂, Temperature)
 - ECG and PPG signal visualization
+- Multi-node overview grid with per-node alert status
+- OTA firmware update (Dashboard → ThingsBoard RPC → ESP32 → UART → nRF52 Central → BLE DFU → node)
+- Browser push notifications + audio alarm for critical vitals
+- Trend arrows (up/down/stable) per vital based on rolling window
+- Print report with patient info and vital stats summary table
+- CSV data export for any time range and key combination
 - Light/Dark theme toggle
 - Auto-refresh every 10 seconds
 - Responsive design (4-col on desktop, 3-col on tablet, 2-col on mobile)
@@ -42,19 +50,36 @@ The HealthMonitor is a **Next.js React application** that displays real-time hea
 health-monitor/
 ├── pages/
 │   ├── index.js                 # Main dashboard component
+│   ├── settings.js              # Settings page
 │   ├── _app.js                  # App wrapper
 │   └── api/
 │       ├── patient.js           # Patient info endpoint
+│       ├── devices.js           # Multi-device list endpoint
+│       ├── ota/
+│       │   ├── upload.js        # Upload firmware binary to server
+│       │   ├── trigger.js       # Send OTA RPC to ESP32 gateway
+│       │   └── download.js      # Serve stored firmware binary
 │       └── telemetry/
 │           ├── latest.js        # Latest vitals endpoint
 │           └── history.js       # Historical data endpoint
 │
 ├── components/
 │   ├── VitalCard.js             # Individual vital display card
-│   └── TrendChart.js            # Chart component for signals
+│   ├── TrendChart.js            # Chart component for signals
+│   ├── OverviewGrid.js          # Multi-node overview grid
+│   ├── OtaModal.js              # OTA firmware update modal
+│   ├── PrintModal.js            # Print report & CSV export modal
+│   ├── NodeDetailModal.js       # Per-node detailed view modal
+│   └── VitalHistoryModal.js     # Vital history chart modal
+│
+├── hooks/
+│   ├── useTbWebSocket.js        # ThingsBoard WebSocket subscription
+│   ├── useNotifications.js      # Browser push notifications + audio alerts
+│   └── useTrends.js             # Rolling-window trend calculation
 │
 ├── lib/
-│   └── thingsboard.js           # ThingsBoard API helpers
+│   ├── thingsboard.js           # ThingsBoard API helpers & token cache
+│   └── exportCsv.js             # CSV data export utility
 │
 ├── styles/
 │   └── globals.css              # All styling (light & dark modes)
@@ -230,11 +255,18 @@ TB_DEVICE_ID=your-device-uuid
 
 **When to modify each file:**
 
-- **pages/index.js** - UI layout, state logic, data fetching
+- **pages/index.js** - UI layout, state logic, data fetching, modal triggers
 - **components/VitalCard.js** - Individual card styling/behavior
 - **components/TrendChart.js** - Chart appearance/data formatting
+- **components/OverviewGrid.js** - Multi-node overview grid layout and alert logic
+- **components/OtaModal.js** - OTA upload/trigger UI and status polling
+- **components/PrintModal.js** - Print report UI and CSV export controls
+- **components/NodeDetailModal.js** - Per-node detail view
+- **hooks/useNotifications.js** - Critical alert thresholds and notification behavior
+- **hooks/useTrends.js** - Trend window size and stable-band sensitivity
+- **lib/exportCsv.js** - CSV column format and download logic
 - **styles/globals.css** - Colors, spacing, responsive breakpoints
-- **lib/thingsboard.js** - API communication
+- **lib/thingsboard.js** - API communication and token caching
 - **pages/api/** - Backend endpoints
 
 ---
@@ -438,8 +470,13 @@ const keys = [
 
 **File-based routing:**
 - `pages/index.js` → `/`
+- `pages/settings.js` → `/settings`
 - `pages/api/patient.js` → `/api/patient`
+- `pages/api/devices.js` → `/api/devices`
 - `pages/api/telemetry/latest.js` → `/api/telemetry/latest`
+- `pages/api/ota/upload.js` → `/api/ota/upload`
+- `pages/api/ota/trigger.js` → `/api/ota/trigger`
+- `pages/api/ota/download.js` → `/api/ota/download`
 
 **API Routes:**
 Files in `pages/api/` become server endpoints automatically:
@@ -978,6 +1015,144 @@ const [ecgRes, ppgRes] = await Promise.all([
 
 ---
 
+## OTA Firmware Update
+
+The OTA flow updates nRF52832 peripheral nodes wirelessly via a chain:
+
+```
+Dashboard → ThingsBoard RPC → ESP32 Gateway → UART → nRF52 Central → BLE DFU → nRF52 Node
+```
+
+### Hardware Requirements
+
+- nRF52832 peripheral must have the **Buttonless BLE DFU bootloader** flashed
+- nRF52832 central firmware must include OTA pass-through code from `nrf52_central_ota.c`
+- ESP32 must run `esp32_uart_gateway.ino` connected to the central via UART
+- Node index in `OtaModal` must match the node's index in the central's `NODE_ADDRS[]` array
+
+### API Endpoints
+
+| Endpoint | Method | Description |
+|---|---|---|
+| `/api/ota/upload` | POST (multipart) | Receives `.bin` file, stores it on the server, returns `{ url }` |
+| `/api/ota/trigger` | POST | Sends `triggerOTA` one-way RPC to the ESP32 gateway via ThingsBoard |
+| `/api/ota/download` | GET | Serves the stored firmware binary for the ESP32 to download |
+
+### OTA Status Polling
+
+After triggering, `OtaModal` polls `/api/telemetry/latest?deviceId=...` every 2 seconds and reads these telemetry keys from the device:
+
+| Key | Values |
+|---|---|
+| `otaStatus` | `idle` / `started` / `flashing` / `complete` / `failed` |
+| `otaMessage` | Human-readable status string |
+| `otaProgress` | 0–100 (percentage) |
+
+Polling stops automatically when status is `complete` or `failed`.
+
+### Environment Variable
+
+```env
+TB_DEVICE_ID=<your-esp32-gateway-device-uuid>   # Used by /api/ota/trigger
+```
+
+---
+
+## Notifications & Alerts
+
+### Browser Push Notifications (`hooks/useNotifications.js`)
+
+Requests `Notification` permission once on mount, then fires a browser notification and a double audio beep whenever any vital crosses a critical threshold. Alerts are debounced to once per 30 seconds per key.
+
+**Critical thresholds:**
+
+| Vital | critMin | critMax |
+|---|---|---|
+| Heart Rate | 40 bpm | 130 bpm |
+| SpO₂ | 88% | 100% |
+| Temperature | 35 °C | 39.5 °C |
+
+**Usage:**
+```javascript
+import { useNotifications } from "../hooks/useNotifications";
+
+useNotifications(deviceName, vitals, enabled);
+// enabled = false to silence alerts during dev
+```
+
+### Trend Arrows (`hooks/useTrends.js`)
+
+Maintains a rolling buffer of the last 10 readings per vital and compares the current value against the previous average. Returns `"up"` / `"down"` / `"stable"` for each vital.
+
+```javascript
+import { useTrends } from "../hooks/useTrends";
+
+const trends = useTrends(vitals);
+// trends.heartRate → "up" | "down" | "stable"
+```
+
+**Tuning constants (inside `hooks/useTrends.js`):**
+
+```javascript
+const WINDOW      = 10;    // number of readings in rolling buffer
+const STABLE_BAND = 0.02;  // % change below which trend is "stable"
+```
+
+---
+
+## Print Report & CSV Export (`components/PrintModal.js`)
+
+Opens via the **Print** button in the header. Lets the user:
+
+1. Select a patient/node
+2. Choose a preset time range (1 hr / 6 hr / 24 hr / 3 days / 7 days) or set a custom range
+3. Toggle which signals to include (Heart Rate, SpO₂, Temperature, ECG, PPG)
+4. **Fetch Data** — pulls up to 5 000 points per key from `/api/telemetry/history`
+5. **CSV** — calls `lib/exportCsv.js` and triggers a browser download; no page print needed
+6. **Print** — hides everything except `#print-report` via `@media print` CSS and calls `window.print()`
+
+### CSV Format (`lib/exportCsv.js`)
+
+Output is a pivoted CSV with one column per selected key, one row per unique timestamp:
+
+```
+# VitalSync Export
+# Device: NodeA
+# Patient: John Doe
+# From: 2026-05-28T00:00:00.000Z
+# To:   2026-05-28T01:00:00.000Z
+# Generated: ...
+
+timestamp_ms,datetime,heartRate,spo2,temperature
+1716854400000,2026-05-28T00:00:00.000Z,72,98,36.6
+...
+```
+
+**Filename pattern:** `vitalsync_<deviceName>_<YYYY-MM-DD>.csv`
+
+---
+
+## Multi-Node Overview Grid (`components/OverviewGrid.js`)
+
+Rendered above the main dashboard. Shows one card per device with:
+- Online/offline badge
+- HR / SpO₂ / Temperature mini-tiles with color-coded status dots
+- Blinking **ALERT** badge and red border when any vital is in critical range
+- Click to select a node (updates `selectedDeviceId` in parent)
+
+**Props:**
+
+```javascript
+<OverviewGrid
+  devices={devices}            // array of { id, name, displayName, online }
+  vitalsMap={vitalsMap}        // { [deviceId]: { heartRate: {value, ts}, ... } }
+  onSelectDevice={fn}          // callback(deviceId)
+  selectedDeviceId={string}    // currently selected device
+/>
+```
+
+---
+
 ## Troubleshooting
 
 ### Issue: "key" prop warning
@@ -1084,6 +1259,6 @@ vercel
 
 ---
 
-**Last Updated:** May 24, 2026  
-**Version:** 2.0.0  
+**Last Updated:** May 28, 2026  
+**Version:** 3.0.0  
 **Author:** HealthMonitor Development Team
