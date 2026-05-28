@@ -10,14 +10,15 @@ const VITAL_META = {
 
 function getStatus(key, value) {
   const THRESHOLDS = {
-    heartRate:   { normalMin:60,   normalMax:100,  critMin:40,   critMax:130  },
-    spo2:        { normalMin:95,   normalMax:100,  critMin:88,   critMax:100  },
-    temperature: { normalMin:36.1, normalMax:37.2, critMin:35.0, critMax:39.5 },
+    heartRate:   { normalMin:60,   normalMax:100,  warnMin:50,  warnMax:120, dangerMin:40,   dangerMax:130  },
+    spo2:        { normalMin:95,   normalMax:100,  warnMin:90,  warnMax:100, dangerMin:88,   dangerMax:100  },
+    temperature: { normalMin:36.1, normalMax:37.2, warnMin:35.5,warnMax:38.5,dangerMin:35.0, dangerMax:39.5 },
   };
   const t = THRESHOLDS[key];
   if (!t || value == null) return "—";
-  if (value < t.critMin || value > t.critMax) return "CRITICAL";
-  if (value < t.normalMin || value > t.normalMax) return "WARNING";
+  if (value < t.dangerMin || value > t.dangerMax) return "DANGEROUS";
+  if (value < t.warnMin   || value > t.warnMax)   return "DANGEROUS";
+  if (value < t.normalMin || value > t.normalMax)  return "WARNING";
   return "NORMAL";
 }
 

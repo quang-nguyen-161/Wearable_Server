@@ -4,18 +4,19 @@ import { useEffect, useState } from "react";
 /**
  * Determines status and percentage within range for a vital.
  */
-function getVitalStatus(value, min, max, critMin, critMax) {
+function getVitalStatus(value, min, max, warnMin, warnMax, dangerMin, dangerMax) {
   if (value === null || value === undefined) return { status: "normal", pct: 0 };
-  const pct = Math.min(100, Math.max(0, ((value - critMin) / (critMax - critMin)) * 100));
-  if (value < critMin || value > critMax) return { status: "critical", pct };
-  if (value < min || value > max) return { status: "warning", pct };
+  const pct = Math.min(100, Math.max(0, ((value - dangerMin) / (dangerMax - dangerMin)) * 100));
+  if (value < dangerMin || value > dangerMax) return { status: "dangerous", pct };
+  if (value < warnMin   || value > warnMax)   return { status: "dangerous", pct };
+  if (value < min       || value > max)        return { status: "warning",   pct };
   return { status: "normal", pct };
 }
 
 const STATUS_LABELS = {
-  normal: "NORMAL",
-  warning: "CAUTION",
-  critical: "ALERT",
+  normal:    "NORMAL",
+  warning:   "WARNING",
+  dangerous: "DANGEROUS",
 };
 
 export default function VitalCard({
@@ -26,8 +27,10 @@ export default function VitalCard({
   color = "cyan",
   min,
   max,
-  critMin,
-  critMax,
+  warnMin,
+  warnMax,
+  dangerMin,
+  dangerMax,
   loading = false,
   animDelay = 0,
   onSelect,
@@ -42,15 +45,13 @@ export default function VitalCard({
     }
   }, [value]);
 
-  const { status, pct } = getVitalStatus(
-    displayValue,
-    min,
-    max,
-    critMin ?? min - (max - min) * 0.3,
-    critMax ?? max + (max - min) * 0.3
-  );
+  const _warnMin   = warnMin   ?? min   - (max - min) * 0.25;
+  const _warnMax   = warnMax   ?? max   + (max - min) * 0.25;
+  const _dangerMin = dangerMin ?? min   - (max - min) * 0.5;
+  const _dangerMax = dangerMax ?? max   + (max - min) * 0.5;
+  const { status, pct } = getVitalStatus(displayValue, min, max, _warnMin, _warnMax, _dangerMin, _dangerMax);
 
-  const isAlert = status === "critical";
+  const isAlert = status === "dangerous";
 
   return (
     <div

@@ -10,9 +10,9 @@ import Link from "next/link";
 
 // ── Defaults ────────────────────────────────────────────────────────────────
 const DEFAULT_THRESHOLDS = {
-  heartRate:   { normalMin: 60,   normalMax: 100,  critMin: 40,   critMax: 130  },
-  spo2:        { normalMin: 95,   normalMax: 100,  critMin: 88,   critMax: 100  },
-  temperature: { normalMin: 36.1, normalMax: 37.2, critMin: 35.0, critMax: 39.5 },
+  heartRate:   { normalMin: 60,   normalMax: 100,  warnMin: 50,  warnMax: 120, dangerMin: 40,   dangerMax: 130  },
+  spo2:        { normalMin: 95,   normalMax: 100,  warnMin: 90,  warnMax: 100, dangerMin: 88,   dangerMax: 100  },
+  temperature: { normalMin: 36.1, normalMax: 37.2, warnMin: 35.5,warnMax: 38.5,dangerMin: 35.0, dangerMax: 39.5 },
 };
 
 const VITAL_LABELS = {
@@ -68,22 +68,28 @@ export default function Settings() {
 
       setThresholds({
         heartRate: {
-          normalMin: a.hr_normalMin  ?? DEFAULT_THRESHOLDS.heartRate.normalMin,
-          normalMax: a.hr_normalMax  ?? DEFAULT_THRESHOLDS.heartRate.normalMax,
-          critMin:   a.hr_critMin    ?? DEFAULT_THRESHOLDS.heartRate.critMin,
-          critMax:   a.hr_critMax    ?? DEFAULT_THRESHOLDS.heartRate.critMax,
+          normalMin:  a.hr_normalMin   ?? DEFAULT_THRESHOLDS.heartRate.normalMin,
+          normalMax:  a.hr_normalMax   ?? DEFAULT_THRESHOLDS.heartRate.normalMax,
+          warnMin:    a.hr_warnMin     ?? DEFAULT_THRESHOLDS.heartRate.warnMin,
+          warnMax:    a.hr_warnMax     ?? DEFAULT_THRESHOLDS.heartRate.warnMax,
+          dangerMin:  a.hr_dangerMin   ?? DEFAULT_THRESHOLDS.heartRate.dangerMin,
+          dangerMax:  a.hr_dangerMax   ?? DEFAULT_THRESHOLDS.heartRate.dangerMax,
         },
         spo2: {
-          normalMin: a.spo2_normalMin ?? DEFAULT_THRESHOLDS.spo2.normalMin,
-          normalMax: a.spo2_normalMax ?? DEFAULT_THRESHOLDS.spo2.normalMax,
-          critMin:   a.spo2_critMin   ?? DEFAULT_THRESHOLDS.spo2.critMin,
-          critMax:   a.spo2_critMax   ?? DEFAULT_THRESHOLDS.spo2.critMax,
+          normalMin:  a.spo2_normalMin  ?? DEFAULT_THRESHOLDS.spo2.normalMin,
+          normalMax:  a.spo2_normalMax  ?? DEFAULT_THRESHOLDS.spo2.normalMax,
+          warnMin:    a.spo2_warnMin    ?? DEFAULT_THRESHOLDS.spo2.warnMin,
+          warnMax:    a.spo2_warnMax    ?? DEFAULT_THRESHOLDS.spo2.warnMax,
+          dangerMin:  a.spo2_dangerMin  ?? DEFAULT_THRESHOLDS.spo2.dangerMin,
+          dangerMax:  a.spo2_dangerMax  ?? DEFAULT_THRESHOLDS.spo2.dangerMax,
         },
         temperature: {
-          normalMin: a.temp_normalMin ?? DEFAULT_THRESHOLDS.temperature.normalMin,
-          normalMax: a.temp_normalMax ?? DEFAULT_THRESHOLDS.temperature.normalMax,
-          critMin:   a.temp_critMin   ?? DEFAULT_THRESHOLDS.temperature.critMin,
-          critMax:   a.temp_critMax   ?? DEFAULT_THRESHOLDS.temperature.critMax,
+          normalMin:  a.temp_normalMin  ?? DEFAULT_THRESHOLDS.temperature.normalMin,
+          normalMax:  a.temp_normalMax  ?? DEFAULT_THRESHOLDS.temperature.normalMax,
+          warnMin:    a.temp_warnMin    ?? DEFAULT_THRESHOLDS.temperature.warnMin,
+          warnMax:    a.temp_warnMax    ?? DEFAULT_THRESHOLDS.temperature.warnMax,
+          dangerMin:  a.temp_dangerMin  ?? DEFAULT_THRESHOLDS.temperature.dangerMin,
+          dangerMax:  a.temp_dangerMax  ?? DEFAULT_THRESHOLDS.temperature.dangerMax,
         },
       });
       setBleInterval(a.bleInterval ?? DEFAULT_INTERVAL);
@@ -106,18 +112,24 @@ export default function Settings() {
 
     // Flatten thresholds into TB attribute keys
     const serverAttrs = {
-      hr_normalMin:   thresholds.heartRate.normalMin,
-      hr_normalMax:   thresholds.heartRate.normalMax,
-      hr_critMin:     thresholds.heartRate.critMin,
-      hr_critMax:     thresholds.heartRate.critMax,
-      spo2_normalMin: thresholds.spo2.normalMin,
-      spo2_normalMax: thresholds.spo2.normalMax,
-      spo2_critMin:   thresholds.spo2.critMin,
-      spo2_critMax:   thresholds.spo2.critMax,
-      temp_normalMin: thresholds.temperature.normalMin,
-      temp_normalMax: thresholds.temperature.normalMax,
-      temp_critMin:   thresholds.temperature.critMin,
-      temp_critMax:   thresholds.temperature.critMax,
+      hr_normalMin:    thresholds.heartRate.normalMin,
+      hr_normalMax:    thresholds.heartRate.normalMax,
+      hr_warnMin:      thresholds.heartRate.warnMin,
+      hr_warnMax:      thresholds.heartRate.warnMax,
+      hr_dangerMin:    thresholds.heartRate.dangerMin,
+      hr_dangerMax:    thresholds.heartRate.dangerMax,
+      spo2_normalMin:  thresholds.spo2.normalMin,
+      spo2_normalMax:  thresholds.spo2.normalMax,
+      spo2_warnMin:    thresholds.spo2.warnMin,
+      spo2_warnMax:    thresholds.spo2.warnMax,
+      spo2_dangerMin:  thresholds.spo2.dangerMin,
+      spo2_dangerMax:  thresholds.spo2.dangerMax,
+      temp_normalMin:  thresholds.temperature.normalMin,
+      temp_normalMax:  thresholds.temperature.normalMax,
+      temp_warnMin:    thresholds.temperature.warnMin,
+      temp_warnMax:    thresholds.temperature.warnMax,
+      temp_dangerMin:  thresholds.temperature.dangerMin,
+      temp_dangerMax:  thresholds.temperature.dangerMax,
     };
 
     try {
@@ -175,7 +187,7 @@ export default function Settings() {
   return (
     <>
       <Head>
-        <title>Settings — VitalSync</title>
+        <title>Settings — WearableDev</title>
       </Head>
 
       <div className="settings-shell">
@@ -227,31 +239,58 @@ export default function Settings() {
                     <span className="threshold-vital-name">{meta.label}</span>
                     <span className="threshold-unit">{meta.unit}</span>
                   </div>
-                  <div className="threshold-grid">
-                    <label className="threshold-field">
-                      <span>Normal Min</span>
-                      <input type="number" step="0.1"
-                        value={vals.normalMin}
-                        onChange={e => setField(vital, "normalMin", e.target.value)} />
-                    </label>
-                    <label className="threshold-field">
-                      <span>Normal Max</span>
-                      <input type="number" step="0.1"
-                        value={vals.normalMax}
-                        onChange={e => setField(vital, "normalMax", e.target.value)} />
-                    </label>
-                    <label className="threshold-field critical">
-                      <span>Critical Min</span>
-                      <input type="number" step="0.1"
-                        value={vals.critMin}
-                        onChange={e => setField(vital, "critMin", e.target.value)} />
-                    </label>
-                    <label className="threshold-field critical">
-                      <span>Critical Max</span>
-                      <input type="number" step="0.1"
-                        value={vals.critMax}
-                        onChange={e => setField(vital, "critMax", e.target.value)} />
-                    </label>
+                  <div className="threshold-tiers">
+                    <div className="tier-group tier-normal">
+                      <div className="tier-label">🟢 NORMAL</div>
+                      <div className="tier-fields">
+                        <label className="threshold-field normal">
+                          <span>Min</span>
+                          <input type="number" step="0.1"
+                            value={vals.normalMin}
+                            onChange={e => setField(vital, "normalMin", e.target.value)} />
+                        </label>
+                        <label className="threshold-field normal">
+                          <span>Max</span>
+                          <input type="number" step="0.1"
+                            value={vals.normalMax}
+                            onChange={e => setField(vital, "normalMax", e.target.value)} />
+                        </label>
+                      </div>
+                    </div>
+                    <div className="tier-group tier-warning">
+                      <div className="tier-label">🟡 WARNING</div>
+                      <div className="tier-fields">
+                        <label className="threshold-field warning">
+                          <span>Min</span>
+                          <input type="number" step="0.1"
+                            value={vals.warnMin}
+                            onChange={e => setField(vital, "warnMin", e.target.value)} />
+                        </label>
+                        <label className="threshold-field warning">
+                          <span>Max</span>
+                          <input type="number" step="0.1"
+                            value={vals.warnMax}
+                            onChange={e => setField(vital, "warnMax", e.target.value)} />
+                        </label>
+                      </div>
+                    </div>
+                    <div className="tier-group tier-danger">
+                      <div className="tier-label">🔴 DANGEROUS</div>
+                      <div className="tier-fields">
+                        <label className="threshold-field danger">
+                          <span>Min</span>
+                          <input type="number" step="0.1"
+                            value={vals.dangerMin}
+                            onChange={e => setField(vital, "dangerMin", e.target.value)} />
+                        </label>
+                        <label className="threshold-field danger">
+                          <span>Max</span>
+                          <input type="number" step="0.1"
+                            value={vals.dangerMax}
+                            onChange={e => setField(vital, "dangerMax", e.target.value)} />
+                        </label>
+                      </div>
+                    </div>
                   </div>
                 </div>
               );
@@ -437,16 +476,37 @@ export default function Settings() {
           color: var(--text-muted, #94a3b8);
         }
 
-        .threshold-grid {
+        .threshold-tiers {
           display: grid;
-          grid-template-columns: 1fr 1fr;
+          grid-template-columns: 1fr 1fr 1fr;
           gap: 10px;
         }
-
+        @media (max-width: 560px) {
+          .threshold-tiers { grid-template-columns: 1fr; }
+        }
+        .tier-group {
+          border-radius: 8px;
+          padding: 10px 12px;
+        }
+        .tier-normal  { background: rgba(34,197,94,0.06);  border: 1px solid rgba(34,197,94,0.22);  }
+        .tier-warning { background: rgba(245,158,11,0.06); border: 1px solid rgba(245,158,11,0.22); }
+        .tier-danger  { background: rgba(239,68,68,0.06);  border: 1px solid rgba(239,68,68,0.22);  }
+        .tier-label {
+          font-size: 10px;
+          font-weight: 700;
+          letter-spacing: 0.08em;
+          margin-bottom: 8px;
+          color: var(--text-primary, #2c3e50);
+        }
+        .tier-fields {
+          display: flex;
+          flex-direction: column;
+          gap: 6px;
+        }
         .threshold-field {
           display: flex;
           flex-direction: column;
-          gap: 4px;
+          gap: 3px;
         }
         .threshold-field span {
           font-size: 10px;
@@ -454,19 +514,23 @@ export default function Settings() {
           letter-spacing: 0.06em;
           color: var(--text-muted, #94a3b8);
         }
-        .threshold-field.critical span { color: #ef4444; }
+        .threshold-field.normal span  { color: #22c55e; }
+        .threshold-field.warning span { color: #f59e0b; }
+        .threshold-field.danger span  { color: #ef4444; }
         .threshold-field input {
-          padding: 7px 10px;
-          border-radius: 7px;
+          padding: 6px 10px;
+          border-radius: 6px;
           border: 1px solid var(--border, #e2e8f0);
-          background: var(--bg-void, #f8f9fa);
+          background: var(--bg-card, #fff);
           color: var(--text-primary, #2c3e50);
           font-size: 13px;
           font-family: inherit;
           width: 100%;
           box-sizing: border-box;
         }
-        .threshold-field.critical input { border-color: rgba(239,68,68,0.3); }
+        .threshold-field.normal input  { border-color: rgba(34,197,94,0.35); }
+        .threshold-field.warning input { border-color: rgba(245,158,11,0.35); }
+        .threshold-field.danger input  { border-color: rgba(239,68,68,0.35); }
         .threshold-field input:focus {
           outline: none;
           border-color: #00c8ff;

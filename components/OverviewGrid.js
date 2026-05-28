@@ -9,21 +9,22 @@ const VITAL_META = {
 };
 
 const THRESHOLDS = {
-  heartRate:   { normalMin:60,   normalMax:100,  critMin:40,   critMax:130  },
-  spo2:        { normalMin:95,   normalMax:100,  critMin:88,   critMax:100  },
-  temperature: { normalMin:36.1, normalMax:37.2, critMin:35.0, critMax:39.5 },
+  heartRate:   { normalMin:60,   normalMax:100,  warnMin:50,  warnMax:120, dangerMin:40,   dangerMax:130  },
+  spo2:        { normalMin:95,   normalMax:100,  warnMin:90,  warnMax:100, dangerMin:88,   dangerMax:100  },
+  temperature: { normalMin:36.1, normalMax:37.2, warnMin:35.5,warnMax:38.5,dangerMin:35.0, dangerMax:39.5 },
 };
 
 function getStatus(key, value) {
   const t = THRESHOLDS[key];
   if (!t || value == null) return "none";
-  if (value < t.critMin || value > t.critMax) return "critical";
-  if (value < t.normalMin || value > t.normalMax) return "warning";
+  if (value < t.dangerMin || value > t.dangerMax) return "dangerous";
+  if (value < t.warnMin   || value > t.warnMax)   return "dangerous";
+  if (value < t.normalMin || value > t.normalMax)  return "warning";
   return "normal";
 }
 
 function StatusDot({ status }) {
-  const colors = { critical: "#ef4444", warning: "#f59e0b", normal: "#22c55e", none: "#cbd5e1" };
+  const colors = { dangerous: "#ef4444", warning: "#f59e0b", normal: "#22c55e", none: "#cbd5e1" };
   return (
     <span style={{
       display: "inline-block", width: 8, height: 8, borderRadius: "50%",
@@ -52,8 +53,8 @@ export default function OverviewGrid({ devices, vitalsMap, onSelectDevice, selec
         const statuses = Object.entries(THRESHOLDS).map(([key]) =>
           getStatus(key, vitals[key]?.value)
         );
-        const hasAlert    = statuses.includes("critical") || statuses.includes("warning");
-        const hasCritical = statuses.includes("critical");
+        const hasAlert    = statuses.includes("dangerous") || statuses.includes("warning");
+        const hasDangerous = statuses.includes("dangerous");
 
         return (
           <button
@@ -63,12 +64,12 @@ export default function OverviewGrid({ devices, vitalsMap, onSelectDevice, selec
               background: isSelected
                 ? "rgba(0,200,255,0.07)"
                 : "var(--bg-card, #fff)",
-              border: `1.5px solid ${hasCritical ? "#ef4444" : isSelected ? "#00c8ff" : "var(--border, #e2e8f0)"}`,
+              border: `1.5px solid ${hasDangerous ? "#ef4444" : isSelected ? "#00c8ff" : "var(--border, #e2e8f0)"}`,
               borderRadius: 12, padding: "12px 14px",
               cursor: "pointer", textAlign: "left",
               fontFamily: "inherit",
               transition: "all 0.15s",
-              boxShadow: hasCritical ? "0 0 0 3px rgba(239,68,68,0.12)" :
+              boxShadow: hasDangerous ? "0 0 0 3px rgba(239,68,68,0.12)" :
                          isSelected  ? "0 0 0 3px rgba(0,200,255,0.15)" : "none",
             }}
           >
@@ -82,7 +83,7 @@ export default function OverviewGrid({ devices, vitalsMap, onSelectDevice, selec
                 </span>
               </div>
               <div style={{ display:"flex", alignItems:"center", gap: 5 }}>
-                {hasCritical && (
+                {hasDangerous && (
                   <span style={{ fontSize: 9, fontWeight: 700, color: "#ef4444",
                     background: "rgba(239,68,68,0.1)", borderRadius: 4, padding: "2px 5px",
                     letterSpacing: "0.06em", animation: "blink 1s ease infinite" }}>

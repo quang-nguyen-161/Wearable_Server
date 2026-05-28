@@ -6,9 +6,9 @@
 import { useEffect, useRef, useCallback } from "react";
 
 const THRESHOLDS = {
-  heartRate:   { critMin:40,  critMax:130, label:"Heart Rate",   unit:"bpm" },
-  spo2:        { critMin:88,  critMax:100, label:"SpO₂",         unit:"%"   },
-  temperature: { critMin:35,  critMax:39.5,label:"Temperature",  unit:"°C"  },
+  heartRate:   { dangerMin:40,  dangerMax:130, label:"Heart Rate",   unit:"bpm" },
+  spo2:        { dangerMin:88,  dangerMax:100, label:"SpO₂",         unit:"%"   },
+  temperature: { dangerMin:35,  dangerMax:39.5,label:"Temperature",  unit:"°C"  },
 };
 
 // Simple beep using Web Audio API — no file needed
@@ -49,14 +49,14 @@ export function useNotifications(deviceName, vitals, enabled = true) {
       const val = vitals[key]?.value;
       if (val == null) continue;
 
-      const isCritical = val < t.critMin || val > t.critMax;
-      if (!isCritical) { delete lastAlerted.current[key]; continue; }
+      const isDangerous = val < t.dangerMin || val > t.dangerMax;
+      if (!isDangerous) { delete lastAlerted.current[key]; continue; }
 
       // Debounce: only alert once per 30 seconds per key
       if (lastAlerted.current[key] && now - lastAlerted.current[key] < 30_000) continue;
       lastAlerted.current[key] = now;
 
-      const direction = val < t.critMin ? "LOW" : "HIGH";
+      const direction = val < t.dangerMin ? "LOW" : "HIGH";
       const message   = `${deviceName}: ${t.label} ${direction} — ${val.toFixed(1)} ${t.unit}`;
 
       // Browser notification

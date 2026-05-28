@@ -13,16 +13,17 @@ const TIME_RANGES = [
 ];
 
 const VITALS_CONFIG = [
-  { key: "heartRate", label: "HEART RATE", unit: "bpm",  color: "#00c8ff", min: 60, max: 100, critMin: 40, critMax: 130 },
-  { key: "spo2",      label: "SPO₂",       unit: "%",    color: "#22c55e", min: 95, max: 100, critMin: 88, critMax: 100 },
-  { key: "temperature", label: "TEMP",     unit: "°C",   color: "#f59e0b", min: 36.1, max: 37.2, critMin: 35, critMax: 39.5 },
+  { key: "heartRate",   label: "HEART RATE", unit: "bpm", color: "#00c8ff", min: 60,   max: 100,  warnMin: 50,  warnMax: 120, dangerMin: 40,  dangerMax: 130  },
+  { key: "spo2",        label: "SPO₂",       unit: "%",   color: "#22c55e", min: 95,   max: 100,  warnMin: 90,  warnMax: 100, dangerMin: 88,  dangerMax: 100  },
+  { key: "temperature", label: "TEMP",       unit: "°C",  color: "#f59e0b", min: 36.1, max: 37.2, warnMin: 35.5,warnMax: 38.5,dangerMin: 35.0,dangerMax: 39.5 },
 ];
 
 function getStatus(key, value) {
   const v = VITALS_CONFIG.find(c => c.key === key);
   if (!v || value == null) return "—";
-  if (value < v.critMin || value > v.critMax) return "CRITICAL";
-  if (value < v.min || value > v.max) return "WARNING";
+  if (value < v.dangerMin || value > v.dangerMax) return "DANGEROUS";
+  if (value < v.warnMin   || value > v.warnMax)   return "DANGEROUS";
+  if (value < v.min       || value > v.max)        return "WARNING";
   return "NORMAL";
 }
 

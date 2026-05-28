@@ -2,22 +2,24 @@
 import { useState, useEffect, useCallback, useRef } from "react";
 
 const VITAL_META = {
-  heartRate:   { label: "Heart Rate",  unit: "bpm", normalMin: 60,   normalMax: 100,  critMin: 40,  critMax: 130  },
-  spo2:        { label: "SpO₂",        unit: "%",   normalMin: 95,   normalMax: 100,  critMin: 88,  critMax: 100  },
-  temperature: { label: "Temperature", unit: "°C",  normalMin: 36.1, normalMax: 37.2, critMin: 35.0,critMax: 39.5 },
+  heartRate:   { label: "Heart Rate",  unit: "bpm", normalMin: 60,   normalMax: 100,  warnMin: 50,  warnMax: 120, dangerMin: 40,   dangerMax: 130  },
+  spo2:        { label: "SpO₂",        unit: "%",   normalMin: 95,   normalMax: 100,  warnMin: 90,  warnMax: 100, dangerMin: 88,   dangerMax: 100  },
+  temperature: { label: "Temperature", unit: "°C",  normalMin: 36.1, normalMax: 37.2, warnMin: 35.5,warnMax: 38.5,dangerMin: 35.0, dangerMax: 39.5 },
 };
 
 function getColor(meta, v) {
   if (v == null) return "#94a3b8";
-  if (v < meta.critMin || v > meta.critMax) return "#ef4444";
-  if (v < meta.normalMin || v > meta.normalMax) return "#f59e0b";
+  if (v < meta.dangerMin || v > meta.dangerMax) return "#ef4444";
+  if (v < meta.warnMin   || v > meta.warnMax)   return "#ef4444";
+  if (v < meta.normalMin || v > meta.normalMax)  return "#f59e0b";
   return "#22c55e";
 }
 
 function getStatus(meta, v) {
   if (v == null) return null;
-  if (v < meta.critMin || v > meta.critMax) return "CRITICAL";
-  if (v < meta.normalMin || v > meta.normalMax) return "WARNING";
+  if (v < meta.dangerMin || v > meta.dangerMax) return "DANGEROUS";
+  if (v < meta.warnMin   || v > meta.warnMax)   return "DANGEROUS";
+  if (v < meta.normalMin || v > meta.normalMax)  return "WARNING";
   return "NORMAL";
 }
 

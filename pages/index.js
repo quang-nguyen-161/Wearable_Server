@@ -17,29 +17,32 @@ const VITALS = [
   {
     key: "heartRate",
     label: "HEART RATE",
-    icon: "♥",
+    icon: "❤️",
     unit: "bpm",
     color: "cyan",
     min: 60, max: 100,
-    critMin: 40, critMax: 130,
+    warnMin: 50,  warnMax: 120,
+    dangerMin: 40, dangerMax: 130,
   },
   {
     key: "spo2",
     label: "SpO₂",
-    icon: "💧",
+    icon: "🩸",
     unit: "%",
     color: "green",
     min: 95, max: 100,
-    critMin: 88, critMax: 100,
+    warnMin: 90,  warnMax: 100,
+    dangerMin: 88, dangerMax: 100,
   },
   {
     key: "temperature",
     label: "TEMPERATURE",
-    icon: "🌡",
+    icon: "🌡️",
     unit: "°C",
     color: "amber",
     min: 36.1, max: 37.2,
-    critMin: 35.0, critMax: 39.5,
+    warnMin: 35.5, warnMax: 38.5,
+    dangerMin: 35.0, dangerMax: 39.5,
   },
 ];
 
@@ -186,6 +189,75 @@ function SignalModal({ signalKey, series, onClose }) {
   );
 }
 
+/* ── Overview Modal ──────────────────────────────────────────────────────── */
+function OverviewModal({ devices, vitalsMap, selectedDeviceId, onSelectDevice, onClose }) {
+  useEffect(() => {
+    const fn = e => { if (e.key === "Escape") onClose(); };
+    window.addEventListener("keydown", fn);
+    return () => window.removeEventListener("keydown", fn);
+  }, [onClose]);
+
+  return (
+    <div
+      onClick={e => { if (e.target === e.currentTarget) onClose(); }}
+      style={{
+        position: "fixed", inset: 0,
+        background: "rgba(0,0,0,0.6)",
+        display: "flex", alignItems: "center", justifyContent: "center",
+        zIndex: 1000, padding: 16,
+        backdropFilter: "blur(3px)",
+      }}
+    >
+      <div style={{
+        background: "var(--bg-card, #fff)",
+        borderRadius: 16,
+        border: "0.5px solid var(--border, #e2e8f0)",
+        width: "100%", maxWidth: 900,
+        maxHeight: "90vh", overflowY: "auto",
+        animation: "ov-in .18s ease",
+      }}>
+        <style>{`@keyframes ov-in{from{opacity:0;transform:scale(.96) translateY(6px)}to{opacity:1;transform:scale(1) translateY(0)}}`}</style>
+
+        {/* Header */}
+        <div style={{
+          display: "flex", alignItems: "center", justifyContent: "space-between",
+          padding: "14px 20px",
+          borderBottom: "0.5px solid var(--border, #e2e8f0)",
+          position: "sticky", top: 0,
+          background: "var(--bg-card, #fff)", zIndex: 2,
+        }}>
+          <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+            <div style={{
+              width: 36, height: 36, borderRadius: 8,
+              background: "rgba(0,200,255,0.1)",
+              display: "flex", alignItems: "center", justifyContent: "center", fontSize: 18,
+            }}>⊞</div>
+            <div>
+              <div style={{ fontSize: 15, fontWeight: 700, color: "var(--text-primary, #1e293b)" }}>Overview</div>
+              <div style={{ fontSize: 11, color: "var(--text-muted, #94a3b8)" }}>
+                All nodes — live vitals snapshot · {devices.length} node{devices.length !== 1 ? "s" : ""}
+              </div>
+            </div>
+          </div>
+          <button onClick={onClose} style={{
+            fontSize: 22, background: "none", border: "none",
+            cursor: "pointer", color: "var(--text-muted, #94a3b8)",
+            padding: "4px 8px", borderRadius: 6, fontFamily: "inherit",
+          }}>×</button>
+        </div>
+
+        {/* Grid */}
+        <OverviewGrid
+          devices={devices}
+          vitalsMap={vitalsMap}
+          selectedDeviceId={selectedDeviceId}
+          onSelectDevice={(id) => { onSelectDevice(id); onClose(); }}
+        />
+      </div>
+    </div>
+  );
+}
+
 /* ── Patient Modal ────────────────────────────────────────────────────────── */
 function PatientModal({ patient, deviceId, onClose, onSaved }) {
   const [editing, setEditing] = useState(false);
@@ -304,10 +376,10 @@ function PatientModal({ patient, deviceId, onClose, onSaved }) {
       onClick={e => { if (e.target === e.currentTarget) onClose(); }}
       style={{
         position: "fixed", inset: 0,
-        background: "rgba(0,0,0,0.55)",
+        background: "rgba(0,0,0,0.6)",
         display: "flex", alignItems: "center", justifyContent: "center",
         zIndex: 1000, padding: 16,
-        backdropFilter: "blur(2px)",
+        backdropFilter: "blur(3px)",
       }}
     >
       <div style={{
@@ -318,7 +390,7 @@ function PatientModal({ patient, deviceId, onClose, onSaved }) {
         maxHeight: "92vh", overflowY: "auto",
         animation: "pm-in .18s ease",
       }}>
-        <style>{`@keyframes pm-in{from{opacity:0;transform:scale(.96) translateY(8px)}to{opacity:1;transform:scale(1) translateY(0)}}`}</style>
+        <style>{`@keyframes pm-in{from{opacity:0;transform:scale(.96) translateY(6px)}to{opacity:1;transform:scale(1) translateY(0)}}`}</style>
 
         {/* ── Header ── */}
         <div style={{
@@ -547,7 +619,7 @@ export default function Dashboard() {
   const [signalModal,      setSignalModal]      = useState(null);
   const [printModal,       setPrintModal]       = useState(false);
   const [otaModal,         setOtaModal]         = useState(false);
-  const [showOverview,     setShowOverview]     = useState(true);
+  const [overviewModal,    setOverviewModal]    = useState(false);
   const [vitalsMap,        setVitalsMap]        = useState({}); // { [deviceId]: vitals }
   const [notificationsOn,  setNotificationsOn]  = useState(true);
 
@@ -684,7 +756,7 @@ export default function Dashboard() {
               </svg>
             </div>
             <div>
-              <div className="brand-name">VITALSYNC</div>
+              <div className="brand-name">WearableDev</div>
               <div className="brand-sub">HEALTH MONITOR</div>
             </div>
           </div>
@@ -693,8 +765,8 @@ export default function Dashboard() {
             <div className="sidebar-section-label">FEATURES</div>
 
             <button
-              className={`nav-item${showOverview ? " nav-item--active" : ""}`}
-              onClick={() => setShowOverview(v => !v)}
+              className="nav-item"
+              onClick={() => setOverviewModal(true)}
             >
               <span className="nav-icon">⊞</span>
               <span className="nav-label">Overview</span>
@@ -820,16 +892,6 @@ export default function Dashboard() {
           </div>
         </div>
 
-        {/* ── Overview grid ── */}
-        {showOverview && devices.length > 0 && (
-          <OverviewGrid
-            devices={devices}
-            vitalsMap={vitalsMap}
-            selectedDeviceId={selectedDeviceId}
-            onSelectDevice={setSelectedDeviceId}
-          />
-        )}
-
         {/* ── Patient bar ── */}
         {patient && (
           <div
@@ -926,8 +988,10 @@ export default function Dashboard() {
                     color={v.color}
                     min={v.min}
                     max={v.max}
-                    critMin={v.critMin}
-                    critMax={v.critMax}
+                    warnMin={v.warnMin}
+                    warnMax={v.warnMax}
+                    dangerMin={v.dangerMin}
+                    dangerMax={v.dangerMax}
                     value={getValue(v.key)}
                     loading={!connected && !getValue(v.key)}
                     animDelay={i * 60}
@@ -979,6 +1043,17 @@ export default function Dashboard() {
           deviceId={selectedDeviceId}
           currentValue={getValue(vitalModal.vitalKey)}
           onClose={() => setVitalModal(null)}
+        />
+      )}
+
+      {/* ── Overview modal ── */}
+      {overviewModal && (
+        <OverviewModal
+          devices={devices}
+          vitalsMap={vitalsMap}
+          selectedDeviceId={selectedDeviceId}
+          onSelectDevice={setSelectedDeviceId}
+          onClose={() => setOverviewModal(false)}
         />
       )}
 
