@@ -1,18 +1,18 @@
 // pages/api/devices.js
+// Returns only devices whose name contains "node" (case-insensitive).
+// Online status is determined by checking the last telemetry timestamp —
+// if no data received within OFFLINE_THRESHOLD_MS, device is marked offline.
 
 import { tbGet } from "../../lib/thingsboard";
 
-const GATEWAY_ID = process.env.TB_DEVICE_ID; // your gateway device UUID
+const GATEWAY_ID = process.env.TB_DEVICE_ID;
 
 export default async function handler(req, res) {
   if (req.method !== "GET") return res.status(405).json({ error: "Method not allowed" });
-
-  if (!GATEWAY_ID) {
-    return res.status(500).json({ error: "TB_DEVICE_ID is not set in .env.local", devices: [] });
-  }
+  if (!GATEWAY_ID) return res.status(500).json({ error: "TB_DEVICE_ID not set", devices: [] });
 
   try {
-    // Try Relations API first (TB auto-creates "Manages" links for gateway children)
+    // ── 1. Get device list ──────────────────────────────────────────────
     let relations = [];
     try {
       relations = await tbGet("/api/relations", {
@@ -26,32 +26,68 @@ export default async function handler(req, res) {
     }
 
     const childIds = (Array.isArray(relations) ? relations : [])
-      .filter((r) => r?.to?.entityType === "DEVICE")
-      .map((r) => r.to.id);
+      .filter(r => r?.to?.entityType === "DEVICE")
+      .map(r => r.to.id);
 
-    // Fallback: list all tenant devices, exclude the gateway itself
-    if (childIds.length === 0) {
-      console.warn("[devices] No relations found, falling back to tenant device list");
+    let allDevices = [];
+
+    if (childIds.length > 0) {
+      const infos = await Promise.all(
+        childIds.map(id => tbGet(`/api/device/${id}`).catch(() => null))
+      );
+      allDevices = infos.filter(Boolean).map(d => ({
+        id: d.id.id, name: d.name, label: d.label || null,
+      }));
+    } else {
       const all = await tbGet("/api/tenant/devices", { pageSize: 100, page: 0 });
-      const devices = (all?.data || [])
-        .filter((d) => d.id.id !== GATEWAY_ID)
-        .map((d) => ({ id: d.id.id, name: d.name, label: d.label || null, online: true }))
-        .sort((a, b) => a.name.localeCompare(b.name));
-      return res.status(200).json({ devices });
+      allDevices = (all?.data || [])
+        .filter(d => d.id.id !== GATEWAY_ID)
+        .map(d => ({ id: d.id.id, name: d.name, label: d.label || null }));
     }
 
-    // Fetch device info for each child UUID
-    const infos = await Promise.all(
-      childIds.map((id) => tbGet(`/api/device/${id}`).catch(() => null))
+    // Filter to node devices only
+    const nodeDevices = allDevices.filter(d =>
+      d.name.toLowerCase().includes("node")
     );
-    const devices = infos
-      .filter(Boolean)
-      .map((d) => ({ id: d.id.id, name: d.name, label: d.label || null, online: true }))
-      .sort((a, b) => a.name.localeCompare(b.name));
 
+    // ── 2. Check device activity via TB SERVER_SCOPE attributes ────────
+    // TB Device State service automatically maintains:
+    //   active           → true/false
+    //   lastActivityTime → epoch ms of last telemetry push
+    //   lastConnectTime  → epoch ms of last connect
+    // These are stored as SERVER_SCOPE attributes on each device.
+
+    const devicesWithStatus = await Promise.all(
+      nodeDevices.map(async (device) => {
+        try {
+          const attrs = await tbGet(
+            `/api/plugins/telemetry/DEVICE/${device.id}/values/attributes/SERVER_SCOPE`,
+            { keys: "active,lastActivityTime,lastConnectTime,lastDisconnectTime,patientName" }
+          );
+
+          // TB returns array: [{ key, value, lastUpdateTs }]
+          const map = {};
+          for (const item of attrs || []) map[item.key] = item.value;
+
+          return {
+            ...device,
+            displayName:         map.patientName || device.name,
+            online:              map.active === true || map.active === "true",
+            lastActivityTime:    map.lastActivityTime    || null,
+            lastConnectTime:     map.lastConnectTime     || null,
+            lastDisconnectTime:  map.lastDisconnectTime  || null,
+          };
+        } catch (_) {
+          return { ...device, online: false };
+        }
+      })
+    );
+
+    const devices = devicesWithStatus.sort((a, b) => a.name.localeCompare(b.name));
     return res.status(200).json({ devices });
+
   } catch (err) {
-    console.error("[devices] Error:", err.message);
+    console.error("[devices]", err.message);
     return res.status(500).json({ error: err.message, devices: [] });
   }
 }

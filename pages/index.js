@@ -6,6 +6,11 @@ import TrendChart from "../components/TrendChart";
 import { useTbWebSocket } from "../hooks/useTbWebSocket";
 import NodeDetailModal from "../components/NodeDetailModal";
 import VitalHistoryModal from "../components/VitalHistoryModal";
+import OverviewGrid from "../components/OverviewGrid";
+import PrintModal from "../components/PrintModal";
+import OtaModal from "../components/OtaModal";
+import { useNotifications } from "../hooks/useNotifications";
+import { useTrends } from "../hooks/useTrends";
 
 /* ── Vital definitions ─────────────────────────────────────────────── */
 const VITALS = [
@@ -37,6 +42,149 @@ const VITALS = [
     critMin: 35.0, critMax: 39.5,
   },
 ];
+
+/* ── Signal Modal ────────────────────────────────────────────────────────── */
+const SIGNAL_META = {
+  ecg: { label: "ECG SIGNAL", color: "#FF96B7", unit: "µV" },
+  ppg: { label: "PPG SIGNAL", color: "#70AD47", unit: "a.u." },
+};
+
+const SIGNAL_WINDOWS = [
+  { label: "3s",  value: 3  },
+  { label: "5s",  value: 5  },
+  { label: "10s", value: 10 },
+  { label: "30s", value: 30 },
+  { label: "60s", value: 60 },
+];
+
+function SignalModal({ signalKey, series, onClose }) {
+  const meta = SIGNAL_META[signalKey];
+  const [windowSec, setWindowSec] = useState(10);
+
+  useEffect(() => {
+    const fn = e => { if (e.key === "Escape") onClose(); };
+    window.addEventListener("keydown", fn);
+    return () => window.removeEventListener("keydown", fn);
+  }, [onClose]);
+
+  // Filter series to selected time window
+  const cutoff      = Date.now() - windowSec * 1000;
+  const displayData = (series || []).filter(d => d.ts >= cutoff);
+  const pointCount  = displayData.length;
+  const effectiveHz = pointCount > 0 && windowSec > 0
+    ? Math.round(pointCount / windowSec)
+    : 0;
+
+  return (
+    <div
+      onClick={e => { if (e.target === e.currentTarget) onClose(); }}
+      style={{
+        position: "fixed", inset: 0,
+        background: "rgba(0,0,0,0.6)",
+        display: "flex", alignItems: "center", justifyContent: "center",
+        zIndex: 1000, padding: 16,
+        backdropFilter: "blur(3px)",
+      }}
+    >
+      <div style={{
+        background: "var(--bg-card, #fff)",
+        borderRadius: 16,
+        border: `1.5px solid ${meta.color}30`,
+        width: "100%", maxWidth: 900,
+        maxHeight: "90vh", overflowY: "auto",
+        animation: "sm-in .18s ease",
+        boxShadow: `0 0 40px ${meta.color}18`,
+      }}>
+        <style>{`@keyframes sm-in{from{opacity:0;transform:scale(.97) translateY(6px)}to{opacity:1;transform:scale(1) translateY(0)}}`}</style>
+
+        {/* Header */}
+        <div style={{
+          display: "flex", alignItems: "center", justifyContent: "space-between",
+          padding: "14px 20px",
+          borderBottom: `1px solid ${meta.color}20`,
+          position: "sticky", top: 0,
+          background: "var(--bg-card, #fff)", zIndex: 2,
+        }}>
+          <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
+            <div style={{
+              width: 36, height: 36, borderRadius: 8,
+              background: `${meta.color}15`,
+              display: "flex", alignItems: "center", justifyContent: "center",
+              fontSize: 16, color: meta.color, fontWeight: 700,
+            }}>〜</div>
+            <div>
+              <div style={{ fontSize: 15, fontWeight: 700, letterSpacing: "0.06em", color: "var(--text-primary, #1e293b)" }}>
+                {meta.label}
+              </div>
+              <div style={{ fontSize: 11, color: "var(--text-muted, #94a3b8)", marginTop: 2 }}>
+                Live · WebSocket · {pointCount} pts · ~{effectiveHz} Hz
+              </div>
+            </div>
+          </div>
+          <button onClick={onClose} style={{
+            fontSize: 22, background: "none", border: "none",
+            cursor: "pointer", color: "var(--text-muted, #94a3b8)",
+            padding: "4px 8px", borderRadius: 6, fontFamily: "inherit",
+          }}>×</button>
+        </div>
+
+        {/* Interval selector */}
+        <div style={{
+          display: "flex", alignItems: "center", gap: 10,
+          padding: "12px 20px",
+          borderBottom: `1px solid ${meta.color}15`,
+          flexWrap: "wrap",
+        }}>
+          <span style={{
+            fontSize: 10, fontWeight: 700, letterSpacing: "0.1em",
+            color: "var(--text-muted, #94a3b8)", marginRight: 4,
+          }}>DISPLAY WINDOW</span>
+
+          <div style={{
+            display: "flex", gap: 4,
+            background: "var(--bg-void, #f1f5f9)",
+            borderRadius: 8, padding: 3,
+          }}>
+            {SIGNAL_WINDOWS.map(w => (
+              <button
+                key={w.label}
+                onClick={() => setWindowSec(w.value)}
+                style={{
+                  fontSize: 11, fontWeight: 700, padding: "5px 12px",
+                  borderRadius: 6, border: "none", cursor: "pointer",
+                  fontFamily: "inherit",
+                  background: windowSec === w.value
+                    ? "var(--bg-card, #fff)"
+                    : "transparent",
+                  color: windowSec === w.value
+                    ? meta.color
+                    : "var(--text-muted, #94a3b8)",
+                  boxShadow: windowSec === w.value
+                    ? "0 1px 4px rgba(0,0,0,0.1)"
+                    : "none",
+                  transition: "all 0.15s",
+                }}
+              >{w.label}</button>
+            ))}
+          </div>
+
+          <span style={{ marginLeft: "auto", fontSize: 11, color: "var(--text-muted, #94a3b8)" }}>
+            Showing last <strong style={{ color: meta.color }}>{windowSec}s</strong> · {pointCount} samples
+          </span>
+        </div>
+
+        {/* Large chart */}
+        <div style={{ padding: "16px 20px 24px" }}>
+          <TrendChart
+            series={displayData}
+            metricKey={signalKey}
+            loading={false}
+          />
+        </div>
+      </div>
+    </div>
+  );
+}
 
 /* ── Patient Modal ────────────────────────────────────────────────────────── */
 function PatientModal({ patient, deviceId, onClose, onSaved }) {
@@ -394,8 +542,14 @@ export default function Dashboard() {
   const [tbToken,          setTbToken]          = useState(null);
   const [deviceAlerts,     setDeviceAlerts]     = useState({});
   const [modalDevice,      setModalDevice]      = useState(null);
-  const [vitalModal,       setVitalModal]       = useState(null); // { vitalKey }
+  const [vitalModal,       setVitalModal]       = useState(null);
   const [patientModal,     setPatientModal]     = useState(false);
+  const [signalModal,      setSignalModal]      = useState(null);
+  const [printModal,       setPrintModal]       = useState(false);
+  const [otaModal,         setOtaModal]         = useState(false);
+  const [showOverview,     setShowOverview]     = useState(true);
+  const [vitalsMap,        setVitalsMap]        = useState({}); // { [deviceId]: vitals }
+  const [notificationsOn,  setNotificationsOn]  = useState(true);
 
   /* ── Fetch TB token for WebSocket ── */
   useEffect(() => {
@@ -413,6 +567,19 @@ export default function Dashboard() {
     connected,
     lastUpdate,
   } = useTbWebSocket(selectedDeviceId, tbToken);
+
+  /* ── Trend arrows for current node ── */
+  const trends = useTrends(vitals);
+
+  /* ── Push notifications + sound for selected node ── */
+  const selectedDevice = devices.find(d => d.id === selectedDeviceId);
+  useNotifications(selectedDevice?.name, vitals, notificationsOn);
+
+  /* ── Sync vitals into vitalsMap for OverviewGrid ── */
+  useEffect(() => {
+    if (!selectedDeviceId || !vitals) return;
+    setVitalsMap(prev => ({ ...prev, [selectedDeviceId]: vitals }));
+  }, [vitals, selectedDeviceId]);
 
   /* ── Track per-device alerts from live vitals ── */
   useEffect(() => {
@@ -488,8 +655,6 @@ export default function Dashboard() {
       hour: "2-digit", minute: "2-digit", second: "2-digit",
     }) : "—";
 
-  const selectedDevice = devices.find((d) => d.id === selectedDeviceId);
-
   /* ── Render ── */
   return (
     <>
@@ -504,9 +669,9 @@ export default function Dashboard() {
       </Head>
 
       <div className="app-shell">
-        {/* ── Header ── */}
-        <header className="header">
-          <div className="header-brand">
+        {/* ── Sidebar ── */}
+        <aside className="sidebar">
+          <div className="sidebar-brand">
             <div className="brand-icon">
               <svg width="22" height="22" viewBox="0 0 24 24" fill="none">
                 <path
@@ -520,39 +685,83 @@ export default function Dashboard() {
             </div>
             <div>
               <div className="brand-name">VITALSYNC</div>
-              <div className="brand-sub">HEALTH MONITORING SYSTEM</div>
+              <div className="brand-sub">HEALTH MONITOR</div>
             </div>
           </div>
 
-          <div className="header-right">
-            <div className="status-badge">
-              <span className={`status-dot ${connected ? "" : "offline"}`} />
-              {connected ? "LIVE" : "OFFLINE"}
-            </div>
-            <span className="last-update">UPDATED {formatTime(lastUpdate)}</span>
+          <nav className="sidebar-nav">
+            <div className="sidebar-section-label">FEATURES</div>
+
             <button
-              className="theme-toggle-btn"
+              className={`nav-item${showOverview ? " nav-item--active" : ""}`}
+              onClick={() => setShowOverview(v => !v)}
+            >
+              <span className="nav-icon">⊞</span>
+              <span className="nav-label">Overview</span>
+            </button>
+
+            <button
+              className={`nav-item${!notificationsOn ? " nav-item--muted" : ""}`}
+              onClick={() => setNotificationsOn(v => !v)}
+            >
+              <span className="nav-icon">{notificationsOn ? "🔔" : "🔕"}</span>
+              <span className="nav-label">Alerts</span>
+              {!notificationsOn && <span className="nav-badge">MUTED</span>}
+            </button>
+
+            <button
+              className="nav-item"
+              onClick={() => setOtaModal(true)}
+            >
+              <span className="nav-icon">⬆️</span>
+              <span className="nav-label">OTA Update</span>
+            </button>
+
+            <button
+              className="nav-item"
+              onClick={() => setPrintModal(true)}
+            >
+              <span className="nav-icon">🖨️</span>
+              <span className="nav-label">Print / Export</span>
+            </button>
+
+            <a
+              href={selectedDeviceId ? `/settings?deviceId=${selectedDeviceId}` : "/settings"}
+              className="nav-item"
+            >
+              <span className="nav-icon">⚙</span>
+              <span className="nav-label">Settings</span>
+            </a>
+          </nav>
+
+          <div className="sidebar-bottom">
+            <div className="sidebar-status">
+              <span className={`status-dot ${connected ? "" : "offline"}`} />
+              <span className="sidebar-status-text">{connected ? "LIVE" : "OFFLINE"}</span>
+            </div>
+            {lastUpdate && (
+              <div className="sidebar-last-update">Updated {formatTime(lastUpdate)}</div>
+            )}
+            <button
+              className="nav-item"
               onClick={toggleTheme}
               title={theme === "light" ? "Switch to dark mode" : "Switch to light mode"}
             >
-              {theme === "light" ? "🌙" : "☀️"}
+              <span className="nav-icon">{theme === "light" ? "🌙" : "☀️"}</span>
+              <span className="nav-label">{theme === "light" ? "Dark Mode" : "Light Mode"}</span>
             </button>
-            <a
-              href={selectedDeviceId ? `/settings?deviceId=${selectedDeviceId}` : "/settings"}
-              className="settings-btn"
-              title="Settings"
-            >
-              ⚙
-            </a>
             <button
               className="refresh-btn"
+              style={{ margin: "4px 2px 0" }}
               onClick={fetchDevices}
             >
               ⟳ REFRESH
             </button>
           </div>
-        </header>
+        </aside>
 
+        {/* ── Main content ── */}
+        <div className="main-content">
         {/* ── Device Selector ── */}
         <div className="device-selector-bar">
           <div className="device-selector-label">
@@ -581,7 +790,7 @@ export default function Dashboard() {
                     <button
                       className={`device-card ${isSelected ? "device-card--active" : ""} ${hasAlert ? "device-card--alert" : ""}`}
                       onClick={() => setSelectedDeviceId(device.id)}
-                      title={device.label || device.name}
+                      title={device.name}
                     >
                       <div className="device-card-top">
                         <span className="device-icon">
@@ -589,7 +798,7 @@ export default function Dashboard() {
                         </span>
                         {hasAlert && <span className="alert-dot" />}
                       </div>
-                      <div className="device-card-name">{device.name || device.id}</div>
+                      <div className="device-card-name">{device.displayName || device.id}</div>
                       {device.label && (
                         <div className="device-card-sub">{device.label}</div>
                       )}
@@ -610,6 +819,16 @@ export default function Dashboard() {
             )}
           </div>
         </div>
+
+        {/* ── Overview grid ── */}
+        {showOverview && devices.length > 0 && (
+          <OverviewGrid
+            devices={devices}
+            vitalsMap={vitalsMap}
+            selectedDeviceId={selectedDeviceId}
+            onSelectDevice={setSelectedDeviceId}
+          />
+        )}
 
         {/* ── Patient bar ── */}
         {patient && (
@@ -681,51 +900,67 @@ export default function Dashboard() {
 
           {/* Vital cards */}
           {selectedDeviceId &&
-            VITALS.map((v, i) => (
-              <div
-                key={`${selectedDeviceId}-${v.key}`}
-                onClick={() => setVitalModal({ vitalKey: v.key })}
-                style={{ cursor: "pointer" }}
-                title="Click to view history"
-              >
-                <VitalCard
-                  label={v.label}
-                  icon={v.icon}
-                  unit={v.unit}
-                  color={v.color}
-                  min={v.min}
-                  max={v.max}
-                  critMin={v.critMin}
-                  critMax={v.critMax}
-                  value={getValue(v.key)}
-                  loading={!connected && !getValue(v.key)}
-                  animDelay={i * 60}
-                />
-              </div>
-            ))}
+            VITALS.map((v, i) => {
+              const trend = trends[v.key];
+              const trendIcon  = trend === "up" ? "↑" : trend === "down" ? "↓" : null;
+              const trendColor = trend === "up" ? "#ef4444" : trend === "down" ? "#3b82f6" : null;
+              return (
+                <div
+                  key={`${selectedDeviceId}-${v.key}`}
+                  onClick={() => setVitalModal({ vitalKey: v.key })}
+                  style={{ cursor: "pointer", position: "relative" }}
+                  title="Click to view history"
+                >
+                  {trendIcon && (
+                    <div style={{
+                      position: "absolute", top: 10, right: 12,
+                      fontSize: 18, fontWeight: 700,
+                      color: trendColor, zIndex: 2,
+                      lineHeight: 1, pointerEvents: "none",
+                    }}>{trendIcon}</div>
+                  )}
+                  <VitalCard
+                    label={v.label}
+                    icon={v.icon}
+                    unit={v.unit}
+                    color={v.color}
+                    min={v.min}
+                    max={v.max}
+                    critMin={v.critMin}
+                    critMax={v.critMax}
+                    value={getValue(v.key)}
+                    loading={!connected && !getValue(v.key)}
+                    animDelay={i * 60}
+                  />
+                </div>
+              );
+            })}
 
           {/* ECG Signal */}
           {selectedDeviceId && (
-            <div className="chart-section">
+            <div className="chart-section chart-section--clickable" onClick={() => setSignalModal({ key: "ecg" })}>
               <div className="chart-header">
                 <span className="chart-title">ECG SIGNAL</span>
                 <span className="chart-subtitle">(Live · WebSocket)</span>
+                <span className="chart-expand-hint">⤢ EXPAND</span>
               </div>
-              <TrendChart series={ecgData} metricKey="ecg" loading={false} />
+              <TrendChart series={ecgData} metricKey="ecg" loading={false} hideControls />
             </div>
           )}
 
           {/* PPG Signal */}
           {selectedDeviceId && (
-            <div className="chart-section">
+            <div className="chart-section chart-section--clickable" onClick={() => setSignalModal({ key: "ppg" })}>
               <div className="chart-header">
                 <span className="chart-title">PPG SIGNAL</span>
                 <span className="chart-subtitle">(Live · WebSocket)</span>
+                <span className="chart-expand-hint">⤢ EXPAND</span>
               </div>
-              <TrendChart series={ppgData} metricKey="ppg" loading={false} />
+              <TrendChart series={ppgData} metricKey="ppg" loading={false} hideControls />
             </div>
           )}
         </main>
+        </div>{/* end main-content */}
       </div>
 
       {/* ── Node detail modal ── */}
@@ -747,6 +982,15 @@ export default function Dashboard() {
         />
       )}
 
+      {/* ── Signal modal (ECG / PPG expanded with interval control) ── */}
+      {signalModal && (
+        <SignalModal
+          signalKey={signalModal.key}
+          series={signalModal.key === "ecg" ? ecgData : ppgData}
+          onClose={() => setSignalModal(null)}
+        />
+      )}
+
       {/* ── Patient info modal ── */}
       {patientModal && patient && (
         <PatientModal
@@ -754,6 +998,22 @@ export default function Dashboard() {
           deviceId={selectedDeviceId}
           onClose={() => setPatientModal(false)}
           onSaved={(updated) => setPatient(prev => ({ ...prev, ...updated }))}
+        />
+      )}
+
+      {/* ── OTA firmware update modal ── */}
+      {otaModal && (
+        <OtaModal
+          devices={devices}
+          onClose={() => setOtaModal(false)}
+        />
+      )}
+
+      {/* ── Print / Export modal ── */}
+      {printModal && (
+        <PrintModal
+          devices={devices}
+          onClose={() => setPrintModal(false)}
         />
       )}
 
@@ -789,6 +1049,26 @@ export default function Dashboard() {
           margin-left: 8px;
         }
         .patient-bar--clickable:hover .patient-expand-hint {
+          opacity: 1;
+        }
+
+        .chart-section--clickable {
+          cursor: pointer;
+          transition: box-shadow 0.15s, border-color 0.15s;
+        }
+        .chart-section--clickable:hover {
+          box-shadow: 0 0 0 1.5px rgba(0,200,255,0.25);
+        }
+        .chart-expand-hint {
+          margin-left: auto;
+          font-size: 10px;
+          font-weight: 700;
+          letter-spacing: 0.08em;
+          color: #00c8ff;
+          opacity: 0;
+          transition: opacity 0.15s;
+        }
+        .chart-section--clickable:hover .chart-expand-hint {
           opacity: 1;
         }
 

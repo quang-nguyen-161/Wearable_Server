@@ -67,7 +67,7 @@ const CustomTooltip = ({ active, payload, label, metricKey }) => {
 };
 
 // ── Main component ────────────────────────────────────────────────────────
-export default function TrendChart({ series, metricKey, loading }) {
+export default function TrendChart({ series, metricKey, loading, hideControls = false }) {
   const isSignal  = SIGNAL_KEYS.has(metricKey);
   const windows   = isSignal ? SIGNAL_WINDOWS : VITAL_WINDOWS;
 
@@ -97,13 +97,14 @@ export default function TrendChart({ series, metricKey, loading }) {
   let displayData = [];
   if (series?.length) {
     if (isSignal) {
-      // Time-based: keep last N seconds
-      const cutoffTs = Date.now() - selectedWindow.value * 1000;
+      // Time-based: use the series' own latest timestamp as anchor
+      // (not Date.now() which drifts when tab is inactive)
+      const latestTs  = series[series.length - 1].ts;
+      const cutoffTs  = latestTs - selectedWindow.value * 1000;
       displayData = series.filter(d => d.ts >= cutoffTs);
-      // Fallback: if no data in range, show last 200 points
-      if (displayData.length === 0) displayData = series.slice(-200);
+      // Safety fallback
+      if (displayData.length < 2) displayData = series.slice(-100);
     } else {
-      // Point-based
       displayData = series.slice(-selectedWindow.value);
     }
   }
@@ -131,6 +132,7 @@ export default function TrendChart({ series, metricKey, loading }) {
     <div style={{ position: "relative" }}>
 
       {/* ── Settings button ── */}
+      {!hideControls && (
       <button
         ref={btnRef}
         onClick={() => setShowPanel(v => !v)}
@@ -150,9 +152,10 @@ export default function TrendChart({ series, metricKey, loading }) {
       >
         ⚙ {selectedWindow.label}
       </button>
+      )}
 
       {/* ── Settings panel ── */}
-      {showPanel && (
+      {!hideControls && showPanel && (
         <div
           ref={panelRef}
           style={{
