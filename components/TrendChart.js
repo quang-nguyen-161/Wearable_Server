@@ -3,6 +3,7 @@ import { useState, useRef, useEffect } from "react";
 import {
   ResponsiveContainer, AreaChart, Area,
   XAxis, YAxis, CartesianGrid, Tooltip, ReferenceLine,
+  LineChart, Line,
 } from "recharts";
 
 const COLOR_MAP = {
@@ -67,7 +68,63 @@ const CustomTooltip = ({ active, payload, label, metricKey }) => {
 };
 
 // ── Main component ────────────────────────────────────────────────────────
-export default function TrendChart({ series, metricKey, loading, hideControls = false }) {
+export default function TrendChart({ series, metricKey, loading, hideControls = false, isLiveWaveform = false, stroke }) {
+
+  // Live waveform mode — high-performance, no animation, no controls
+  if (isLiveWaveform) {
+    const liveColor = stroke || COLOR_MAP[metricKey] || "var(--cyan)";
+    if (!series || series.length === 0) {
+      return (
+        <div style={{
+          height: 220, display: "flex", alignItems: "center", justifyContent: "center",
+          fontFamily: "Share Tech Mono, monospace", fontSize: "0.72rem",
+          color: "rgba(120,160,200,0.4)", letterSpacing: "0.08em",
+        }}>
+          WAITING FOR SIGNAL…
+        </div>
+      );
+    }
+    const liveDisplay = series.slice(-1000); // ~10s at 100Hz — matches TB window
+    const fmtTs = (ts) => new Date(ts).toLocaleTimeString("en-US", {
+      hour: "2-digit", minute: "2-digit", second: "2-digit", hour12: false,
+    });
+    return (
+      <ResponsiveContainer width="100%" height={220}>
+        <LineChart data={liveDisplay} margin={{ top: 4, right: 8, bottom: 0, left: 4 }}>
+          <CartesianGrid stroke="rgba(120,160,200,0.08)" strokeDasharray="4 4" vertical={false} />
+          <XAxis
+            dataKey="ts"
+            type="number"
+            scale="time"
+            domain={["dataMin", "dataMax"]}
+            tickFormatter={fmtTs}
+            tick={{ fill: "rgba(120,160,200,0.45)", fontSize: 9, fontFamily: "Share Tech Mono, monospace" }}
+            tickLine={false}
+            axisLine={false}
+            tickCount={5}
+            interval="preserveStartEnd"
+          />
+          <YAxis
+            domain={["auto", "auto"]}
+            tick={{ fill: "rgba(120,160,200,0.45)", fontSize: 9, fontFamily: "Share Tech Mono, monospace" }}
+            tickLine={false}
+            axisLine={false}
+            width={38}
+            tickFormatter={v => Math.round(v)}
+          />
+          <Line
+            type="linear"
+            dataKey="value"
+            stroke={liveColor}
+            strokeWidth={1.2}
+            dot={false}
+            isAnimationActive={false}
+          />
+        </LineChart>
+      </ResponsiveContainer>
+    );
+  }
+
   const isSignal  = SIGNAL_KEYS.has(metricKey);
   const windows   = isSignal ? SIGNAL_WINDOWS : VITAL_WINDOWS;
 

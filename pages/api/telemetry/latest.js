@@ -2,7 +2,7 @@
 
 import { getLatestTelemetry } from "../../../lib/thingsboard";
 
-const VITAL_KEYS = ["heartRate", "spo2", "temperature"];
+const VITAL_KEYS = ["heartRate", "spo2", "temperature", "ecg_batch", "ppg_batch"];
 
 export default async function handler(req, res) {
   if (req.method !== "GET") return res.status(405).json({ error: "Method not allowed" });

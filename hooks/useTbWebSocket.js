@@ -3,9 +3,10 @@
 // so the chart renders smoothly instead of thrashing on every individual point.
 
 import { useEffect, useRef, useState, useCallback } from "react";
+import { parseWaveformBatch } from "../lib/thingsboard";
 
 const TB_WS_URL   = process.env.NEXT_PUBLIC_TB_WS_URL;
-const MAX_POINTS  = 500;   // rolling buffer size per signal
+const MAX_POINTS  = 500;   // rolling buffer size per signal (~5s at 100Hz)
 const FLUSH_MS    = 33;    // ~30fps render rate
 
 export function useTbWebSocket(deviceId, tbToken) {
@@ -14,15 +15,17 @@ export function useTbWebSocket(deviceId, tbToken) {
   const flushRef    = useRef(null);
 
   // Pending buffers — accumulate between flushes, never trigger renders directly
-  const pendingEcg    = useRef([]);
-  const pendingPpg    = useRef([]);
-  const pendingVitals = useRef({});
+  const pendingEcg      = useRef([]);
+  const pendingPpg      = useRef([]);
+  const pendingVitals   = useRef({});
+  const lastBatchTsRef  = useRef(null); // updated when any ECG data arrives
 
-  const [vitals,     setVitals]     = useState({});
-  const [ecgData,    setEcgData]    = useState([]);
-  const [ppgData,    setPpgData]    = useState([]);
-  const [connected,  setConnected]  = useState(false);
-  const [lastUpdate, setLastUpdate] = useState(null);
+  const [vitals,      setVitals]      = useState({});
+  const [ecgData,     setEcgData]     = useState([]);
+  const [ppgData,     setPpgData]     = useState([]);
+  const [lastBatchTs, setLastBatchTs] = useState(null);
+  const [connected,   setConnected]   = useState(false);
+  const [lastUpdate,  setLastUpdate]  = useState(null);
 
   // ── Flush pending data to React state at 30fps ──────────────────────
   const startFlushLoop = useCallback(() => {
@@ -52,6 +55,12 @@ export function useTbWebSocket(deviceId, tbToken) {
           const next = [...prev, ...pts];
           return next.length > MAX_POINTS ? next.slice(-MAX_POINTS) : next;
         });
+      }
+
+      // lastBatchTs — flush to state so noSignal logic in index.js can detect stale signal
+      if (lastBatchTsRef.current !== null) {
+        setLastBatchTs(lastBatchTsRef.current);
+        lastBatchTsRef.current = null;
       }
     }, FLUSH_MS);
   }, []);
@@ -84,13 +93,27 @@ export function useTbWebSocket(deviceId, tbToken) {
         }
       }
 
-      // ECG / PPG — TB sends all timestamps in the subscription update.
-      // data["ecg"] = [[ts1, val1], [ts2, val2], ...] — all samples in the batch
+      // ECG / PPG — individual timestamped points (legacy or future direct-sample path)
       for (const [ts, val] of (data["ecg"] || [])) {
         pendingEcg.current.push({ ts, value: parseFloat(val) });
       }
       for (const [ts, val] of (data["ppg"] || [])) {
         pendingPpg.current.push({ ts, value: parseFloat(val) });
+      }
+
+      // ecg_batch / ppg_batch — JSON-string arrays from HTTPS POST
+      // parseWaveformBatch reconstructs per-sample timestamps: last sample = batchTs, step 10ms back
+      const ecgEntry = data["ecg_batch"]?.[0];
+      const ppgEntry = data["ppg_batch"]?.[0];
+      if (ecgEntry || ppgEntry) {
+        const batchTs    = ecgEntry?.[0] ?? Date.now();
+        const ecgRaw     = ecgEntry?.[1] ?? ecgEntry?.value;
+        const ppgRaw     = ppgEntry?.[1] ?? ppgEntry?.value;
+        const ecgSamples = parseWaveformBatch(ecgRaw, batchTs);
+        const ppgSamples = parseWaveformBatch(ppgRaw, batchTs);
+        for (const pt of ecgSamples) pendingEcg.current.push(pt);
+        for (const pt of ppgSamples) pendingPpg.current.push(pt);
+        lastBatchTsRef.current = Date.now();
       }
 
     } catch (err) {
@@ -111,9 +134,11 @@ export function useTbWebSocket(deviceId, tbToken) {
     setVitals({});
     setEcgData([]);
     setPpgData([]);
+    setLastBatchTs(null);
     pendingEcg.current    = [];
     pendingPpg.current    = [];
     pendingVitals.current = {};
+    lastBatchTsRef.current = null;
 
     console.log("[WS] Connecting to device:", deviceId);
     const ws = new WebSocket(`${TB_WS_URL}?token=${tbToken}`);
@@ -121,7 +146,7 @@ export function useTbWebSocket(deviceId, tbToken) {
 
     ws.onopen = () => {
       setConnected(true);
-      console.log("[WS] ✅ Connected");
+      console.log("[WS] Connected");
 
       ws.send(JSON.stringify({
         tsSubCmds: [{
@@ -154,5 +179,5 @@ export function useTbWebSocket(deviceId, tbToken) {
     };
   }, [deviceId, tbToken, handleMessage, startFlushLoop, stopFlushLoop]);
 
-  return { vitals, ecgData, ppgData, connected, lastUpdate };
+  return { vitals, ecgData, ppgData, lastBatchTs, connected, lastUpdate };
 }

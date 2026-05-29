@@ -12,8 +12,8 @@
 
 const mqtt = require("mqtt");
 
-const GATEWAY_TOKEN     = "kouqwqlqiccuev82k6f0";
-const TB_HOST           = "mqtt://thingsboard.cloud";
+const GATEWAY_TOKEN     = "4o51ajerynq34mtosc26";
+const TB_HOST           = "mqtt://c7.hust-2slab.org";
 const SAMPLES_PER_BATCH = 5;    // samples per publish
 const PUBLISH_INTERVAL  = 100;  // ms — TB Cloud free tier needs ≥100ms between publishes
 const SAMPLE_INTERVAL   = PUBLISH_INTERVAL / SAMPLES_PER_BATCH; // 20ms = 50Hz effective

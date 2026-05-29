@@ -4,6 +4,7 @@ import Head from "next/head";
 import VitalCard from "../components/VitalCard";
 import TrendChart from "../components/TrendChart";
 import { useTbWebSocket } from "../hooks/useTbWebSocket";
+
 import NodeDetailModal from "../components/NodeDetailModal";
 import VitalHistoryModal from "../components/VitalHistoryModal";
 import OverviewGrid from "../components/OverviewGrid";
@@ -636,9 +637,19 @@ export default function Dashboard() {
     vitals,
     ecgData,
     ppgData,
+    lastBatchTs,
     connected,
     lastUpdate,
   } = useTbWebSocket(selectedDeviceId, tbToken);
+
+  /* ── No-signal detection (CoAP waveform batches) ── */
+  const [noSignal, setNoSignal] = useState(false);
+  useEffect(() => {
+    if (!lastBatchTs) return;
+    setNoSignal(false);
+    const timer = setTimeout(() => setNoSignal(true), 10000);
+    return () => clearTimeout(timer);
+  }, [lastBatchTs]);
 
   /* ── Trend arrows for current node ── */
   const trends = useTrends(vitals);
@@ -1000,27 +1011,45 @@ export default function Dashboard() {
               );
             })}
 
-          {/* ECG Signal */}
+          {/* ECG Signal — live HTTPS waveform, each sample timestamped */}
           {selectedDeviceId && (
             <div className="chart-section chart-section--clickable" onClick={() => setSignalModal({ key: "ecg" })}>
               <div className="chart-header">
                 <span className="chart-title">ECG SIGNAL</span>
-                <span className="chart-subtitle">(Live · WebSocket)</span>
+                <span className="chart-subtitle">(Live · HTTPS · 100Hz)</span>
+                <span className="chart-badge" style={{ color: noSignal ? "var(--amber)" : "var(--green)" }}>
+                  {noSignal ? "NO SIGNAL" : "LIVE"}
+                </span>
                 <span className="chart-expand-hint">⤢ EXPAND</span>
               </div>
-              <TrendChart series={ecgData} metricKey="ecg" loading={false} hideControls />
+              <TrendChart
+                series={ecgData}
+                metricKey="ecg"
+                loading={false}
+                isLiveWaveform={true}
+                stroke="var(--green)"
+              />
             </div>
           )}
 
-          {/* PPG Signal */}
+          {/* PPG Signal — live HTTPS waveform, each sample timestamped */}
           {selectedDeviceId && (
             <div className="chart-section chart-section--clickable" onClick={() => setSignalModal({ key: "ppg" })}>
               <div className="chart-header">
-                <span className="chart-title">PPG SIGNAL</span>
-                <span className="chart-subtitle">(Live · WebSocket)</span>
+                <span className="chart-title">PPG / SpO₂ WAVEFORM</span>
+                <span className="chart-subtitle">(Live · HTTPS · 100Hz)</span>
+                <span className="chart-badge" style={{ color: noSignal ? "var(--amber)" : "var(--cyan)" }}>
+                  {noSignal ? "NO SIGNAL" : "LIVE"}
+                </span>
                 <span className="chart-expand-hint">⤢ EXPAND</span>
               </div>
-              <TrendChart series={ppgData} metricKey="ppg" loading={false} hideControls />
+              <TrendChart
+                series={ppgData}
+                metricKey="ppg"
+                loading={false}
+                isLiveWaveform={true}
+                stroke="var(--cyan)"
+              />
             </div>
           )}
         </main>

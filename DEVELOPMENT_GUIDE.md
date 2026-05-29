@@ -61,7 +61,8 @@ health-monitor/
 │       │   └── download.js      # Serve stored firmware binary
 │       └── telemetry/
 │           ├── latest.js        # Latest vitals endpoint
-│           └── history.js       # Historical data endpoint
+│           ├── history.js       # Historical data endpoint
+│           └── ingest.js        # Receives ESP32 batches → TB admin API
 │
 ├── components/
 │   ├── VitalCard.js             # Individual vital display card
@@ -84,13 +85,44 @@ health-monitor/
 ├── styles/
 │   └── globals.css              # All styling (light & dark modes)
 │
+├── firmware/
+│   ├── platformio.ini           # PlatformIO board + library config
+│   └── src/
+│       └── main.cpp             # ESP32 firmware (Arduino framework)
+│
+├── scripts/
+│   └── test-http-stream.js      # Simulates ESP32 HTTPS+MQTT streaming
+│
 ├── public/
 │   └── (static assets)
 │
 ├── package.json                 # Dependencies
 ├── next.config.js               # Next.js configuration
 ├── .env.local                   # Environment variables (Git ignored)
+├── STREAMING_INSTRUCTION.md     # Streaming pipeline setup & tuning guide
 └── README.md                    # Project documentation
+```
+
+---
+
+## Streaming Pipeline
+
+The dashboard receives ECG/PPG waveforms and vitals from ESP32 hardware via a
+dual-protocol pipeline. For full setup, tuning, and parameter reference see
+**[STREAMING_INSTRUCTION.md](STREAMING_INSTRUCTION.md)**.
+
+**Quick summary:**
+- ECG/PPG → ESP32 samples at 100Hz, batches 50 samples, HTTPS POSTs to `/api/telemetry/ingest` every 500ms
+- Vitals → ESP32 publishes `{ heartRate, spo2, temperature }` via MQTT gateway every 15s
+- Ingest handler decodes each batch into per-sample time-series and writes to ThingsBoard admin API
+- Dashboard receives data via ThingsBoard WebSocket (`useTbWebSocket`) and REST poll (`/api/telemetry/latest`)
+
+**To change sample rate, batch size, or send interval** — see [Part 7 of STREAMING_INSTRUCTION.md](STREAMING_INSTRUCTION.md#part-7--tuning-parameters). Changes always require updating three files in sync: `firmware/src/main.cpp`, `scripts/test-http-stream.js`, and `pages/api/telemetry/ingest.js`.
+
+**To test the pipeline locally:**
+```bash
+npm run dev          # start Next.js on localhost:3000
+node scripts/test-http-stream.js   # simulate ESP32 streaming
 ```
 
 ---
