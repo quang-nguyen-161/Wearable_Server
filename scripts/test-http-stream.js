@@ -21,7 +21,6 @@
 
 const http = require('http');
 const fs   = require('fs');
-const mqtt = require('mqtt');
 
 // ── Load .env.local if present ────────────────────────────────────────────
 function loadEnv(filePath) {
@@ -46,17 +45,7 @@ const SERVER_HOST    = 'localhost';
 const SERVER_PORT    = 3000;
 const INGEST_PATH    = '/api/telemetry/ingest';
 
-// TB self-hosted MQTT — plain hostname, port 1883
-const TB_BASE_URL    = process.env.TB_BASE_URL || '';
-const MQTT_HOST      = TB_BASE_URL.replace(/^https?:\/\//, '').replace(/\/$/, '') || 'c7.hust-2slab.org';
-const MQTT_PORT      = 1883;
-const GATEWAY_TOKEN  = process.env.TB_GATEWAY_ACCESS_TOKEN || '';
-const GATEWAY_TOPIC  = 'v1/gateway/telemetry';
-
-if (!GATEWAY_TOKEN) {
-  console.error('[Error] TB_GATEWAY_ACCESS_TOKEN is not set in .env.local');
-  process.exit(1);
-}
+const TB_BASE_URL = process.env.TB_BASE_URL || '';
 
 const BATCH_SIZE         = 250;   // samples per POST
 const SAMPLE_INTERVAL_MS = 4;     // 4ms per sample = 250Hz
@@ -109,43 +98,21 @@ function postIngest(body) {
   req.end();
 }
 
-// ── MQTT gateway client for vitals ────────────────────────────────────────
-
-let mqttReady = false;
-
-const gw = mqtt.connect(`mqtt://${MQTT_HOST}:${MQTT_PORT}`, {
-  username:        GATEWAY_TOKEN,
-  password:        '',
-  clientId:        'gw-vitals-' + Date.now().toString(16),
-  keepalive:       60,
-  reconnectPeriod: 5000,
-  clean:           true,
-});
-
-gw.on('connect',   () => { console.log('[MQTT] Gateway connected'); mqttReady = true; });
-gw.on('close',     () => { console.warn('[MQTT] disconnected'); mqttReady = false; });
-gw.on('reconnect', () => console.log('[MQTT] reconnecting...'));
-gw.on('error',     err => console.error('[MQTT] error:', err.message));
+// ── Vitals via HTTP ingest (no MQTT needed) ───────────────────────────────
 
 function publishVitals() {
-  if (!mqttReady) return;
-  const ts  = Date.now();
-  const out = {};
+  const t = new Date().toLocaleTimeString();
   for (const node of NODES) {
-    node.hrBase   = Math.max(50,  Math.min(110,  node.hrBase   + (Math.random() - 0.5) * 2));
-    node.spo2Base = Math.max(93,  Math.min(100,  node.spo2Base + (Math.random() - 0.5) * 0.3));
+    node.hrBase   = Math.max(50,   Math.min(110,  node.hrBase   + (Math.random() - 0.5) * 2));
+    node.spo2Base = Math.max(93,   Math.min(100,  node.spo2Base + (Math.random() - 0.5) * 0.3));
     node.tempBase = Math.max(36.0, Math.min(37.8, node.tempBase + (Math.random() - 0.5) * 0.1));
-    out[node.name] = [{ ts, values: {
+    postIngest({
+      deviceName:  node.name,
       heartRate:   +node.hrBase.toFixed(1),
       spo2:        +node.spo2Base.toFixed(1),
       temperature: +node.tempBase.toFixed(1),
-    }}];
-  }
-  gw.publish(GATEWAY_TOPIC, JSON.stringify(out), { qos: 0 });
-  const t = new Date().toLocaleTimeString();
-  for (const node of NODES) {
-    const v = out[node.name][0].values;
-    console.log(`[Vitals] ${t}  ${node.name}  HR:${String(v.heartRate).padStart(5)}  SpO2:${v.spo2}  Temp:${v.temperature}`);
+    });
+    console.log(`[Vitals] ${t}  ${node.name}  HR:${String(+node.hrBase.toFixed(1)).padStart(5)}  SpO2:${+node.spo2Base.toFixed(1)}  Temp:${+node.tempBase.toFixed(1)}`);
   }
 }
 
@@ -184,10 +151,9 @@ function startNode(node, delayMs) {
 console.log('╔══════════════════════════════════════════════════════════╗');
 console.log('║  Health Monitor — Server-Decoded Stream (3 nodes, 250Hz)║');
 console.log('╚══════════════════════════════════════════════════════════╝');
-console.log(`HTTPS → http://${SERVER_HOST}:${SERVER_PORT}${INGEST_PATH}`);
-console.log(`        Batch → server decodes → TB gateway API [{ts,values}×${BATCH_SIZE}]`);
-console.log(`        ${BATCH_SIZE} samples × ${SAMPLE_INTERVAL_MS}ms = ${BATCH_SIZE * SAMPLE_INTERVAL_MS}ms of data/batch`);
-console.log(`MQTT  → ${MQTT_HOST}:${MQTT_PORT}  vitals every ${VITAL_INTERVAL_MS / 1000}s`);
+console.log(`HTTP  → http://${SERVER_HOST}:${SERVER_PORT}${INGEST_PATH}`);
+console.log(`        Waveform: ${BATCH_SIZE} samples × ${SAMPLE_INTERVAL_MS}ms = ${BATCH_SIZE * SAMPLE_INTERVAL_MS}ms per batch`);
+console.log(`        Vitals: every ${VITAL_INTERVAL_MS / 1000}s (via same HTTP endpoint)`);
 console.log();
 console.log('Requires: npm run dev  (Next.js server on port 3000)');
 console.log(`Verify:   ${TB_BASE_URL || 'https://c7.hust-2slab.org'} → Node1/Node2/Node3 → Latest Telemetry`);

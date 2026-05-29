@@ -6,10 +6,13 @@
 //
 // POST /api/telemetry/ingest
 // Body: {
-//   deviceName: "Node1",
-//   ts:         1234567890123,   // optional; server uses Date.now() if absent
-//   ecg_batch:  "[v0,v1,...,v49]",
-//   ppg_batch:  "[v0,v1,...,v49]",
+//   deviceName:  "Node1",
+//   ts:          1234567890123,   // optional; server uses Date.now() if absent
+//   ecg_batch:   "[v0,v1,...,v49]",  // optional
+//   ppg_batch:   "[v0,v1,...,v49]",  // optional
+//   heartRate:   72.5,               // optional vitals
+//   spo2:        98.2,
+//   temperature: 36.6,
 // }
 // Returns: { ok: true, device: "Node1", points: 50 }
 
@@ -17,88 +20,117 @@ import { getTbToken } from "../../../lib/thingsboard";
 
 const TB_URL = process.env.TB_BASE_URL?.replace(/\/$/, "");
 
-// In-memory device name → TB UUID cache (refreshed every 5 min)
+// Cache: device name → { id, token }  (refreshed every 5 min)
 let deviceCache = {};
 let cacheTs     = 0;
 
-async function resolveDeviceId(jwtToken, name) {
+async function resolveDevice(jwtToken, name) {
   if (Date.now() - cacheTs > 300_000) {
     const res  = await fetch(`${TB_URL}/api/tenant/devices?pageSize=100&page=0`, {
       headers: { "X-Authorization": `Bearer ${jwtToken}` },
     });
     const json = await res.json();
-    deviceCache = {};
-    for (const d of (json.data || [])) deviceCache[d.name] = d.id.id;
+    for (const d of (json.data || [])) {
+      deviceCache[d.name] = { ...deviceCache[d.name], id: d.id.id };
+    }
     cacheTs = Date.now();
   }
 
-  if (deviceCache[name]) return deviceCache[name];
+  if (deviceCache[name]?.token) return deviceCache[name];
 
-  // Device not found on this server — create it automatically
-  const res = await fetch(`${TB_URL}/api/device`, {
+  let id = deviceCache[name]?.id;
+
+  if (!id) {
+    // Auto-create the device
+    const res = await fetch(`${TB_URL}/api/device`, {
+      method:  "POST",
+      headers: { "Content-Type": "application/json", "X-Authorization": `Bearer ${jwtToken}` },
+      body:    JSON.stringify({ name, type: "default" }),
+    });
+    if (!res.ok) {
+      const text = await res.text();
+      throw new Error(`Failed to create device "${name}" (${res.status}): ${text.slice(0, 200)}`);
+    }
+    const device = await res.json();
+    id = device.id.id;
+    console.log(`[ingest] Auto-created device "${name}" → ${id}`);
+  }
+
+  // Fetch the device's own access token so TB marks it active on each POST
+  const credRes = await fetch(`${TB_URL}/api/device/${id}/credentials`, {
+    headers: { "X-Authorization": `Bearer ${jwtToken}` },
+  });
+  if (!credRes.ok) throw new Error(`Could not fetch credentials for device ${id}`);
+  const creds = await credRes.json();
+  const token = creds.credentialsId;
+
+  deviceCache[name] = { id, token };
+  return deviceCache[name];
+}
+
+async function postTimeseries(deviceToken, telemetry) {
+  const res = await fetch(`${TB_URL}/api/v1/${deviceToken}/telemetry`, {
     method:  "POST",
-    headers: { "Content-Type": "application/json", "X-Authorization": `Bearer ${jwtToken}` },
-    body:    JSON.stringify({ name, type: "default" }),
+    headers: { "Content-Type": "application/json" },
+    body:    JSON.stringify(telemetry),
   });
   if (!res.ok) {
     const text = await res.text();
-    throw new Error(`Failed to create device "${name}" (${res.status}): ${text.slice(0, 200)}`);
-  }
-  const device = await res.json();
-  deviceCache[name] = device.id.id;
-  console.log(`[ingest] Auto-created device "${name}" → ${device.id.id}`);
-  return device.id.id;
-}
-
-async function postTimeseries(jwtToken, deviceId, telemetry) {
-  const res = await fetch(
-    `${TB_URL}/api/plugins/telemetry/DEVICE/${deviceId}/timeseries/ANY`,
-    {
-      method:  "POST",
-      headers: {
-        "Content-Type":    "application/json",
-        "X-Authorization": `Bearer ${jwtToken}`,
-      },
-      body: JSON.stringify(telemetry),
-    }
-  );
-  if (!res.ok) {
-    const text = await res.text();
-    throw new Error(`TB ${res.status}: ${text.slice(0, 200)}`);
+    throw new Error(`TB device API ${res.status}: ${text.slice(0, 200)}`);
   }
 }
 
 export default async function handler(req, res) {
   if (req.method !== "POST") return res.status(405).end();
 
-  const { deviceName, ts, ecg_batch, ppg_batch } = req.body ?? {};
+  const { deviceName, ts, ecg_batch, ppg_batch, heartRate, spo2, temperature } = req.body ?? {};
 
-  if (!deviceName)              return res.status(400).json({ error: "deviceName required" });
-  if (!ecg_batch && !ppg_batch) return res.status(400).json({ error: "ecg_batch or ppg_batch required" });
+  if (!deviceName) return res.status(400).json({ error: "deviceName required" });
+
+  const hasWaveform = ecg_batch || ppg_batch;
+  const hasVitals   = heartRate != null || spo2 != null || temperature != null;
+  if (!hasWaveform && !hasVitals) {
+    return res.status(400).json({ error: "at least one of ecg_batch, ppg_batch, or vitals required" });
+  }
 
   try {
     const jwtToken = await getTbToken();
-    const deviceId = await resolveDeviceId(jwtToken, deviceName);
+    const { token: deviceToken } = await resolveDevice(jwtToken, deviceName);
 
-    const batchTs = ts ?? Date.now();
-    const ecg = ecg_batch ? JSON.parse(ecg_batch) : [];
-    const ppg = ppg_batch ? JSON.parse(ppg_batch) : [];
-    const n   = Math.max(ecg.length, ppg.length);
+    const batchTs  = ts ?? Date.now();
+    const telemetry = [];
 
-    if (n === 0) return res.status(400).json({ error: "Empty batch" });
+    // Waveform samples — per-sample timestamps 4ms apart (~250Hz)
+    if (hasWaveform) {
+      const ecg = ecg_batch ? JSON.parse(ecg_batch) : [];
+      const ppg = ppg_batch ? JSON.parse(ppg_batch) : [];
+      const n   = Math.max(ecg.length, ppg.length);
+      if (n > 0) {
+        for (let i = 0; i < n; i++) {
+          const sampleTs = batchTs - (n - 1 - i) * 4;
+          const values   = {};
+          if (i < ecg.length) values.ecg = ecg[i];
+          if (i < ppg.length) values.ppg = ppg[i];
+          telemetry.push({ ts: sampleTs, values });
+        }
+      }
+    }
 
-    // Reconstruct per-sample timestamps: last sample = batchTs, step back 4ms each (~250Hz)
-    const telemetry = Array.from({ length: n }, (_, i) => {
-      const sampleTs = batchTs - (n - 1 - i) * 4;
-      const values   = {};
-      if (i < ecg.length) values.ecg = ecg[i];
-      if (i < ppg.length) values.ppg = ppg[i];
-      return { ts: sampleTs, values };
-    });
+    // Vitals — single timestamped entry at batchTs
+    if (hasVitals) {
+      const values = {};
+      if (heartRate   != null) values.heartRate   = heartRate;
+      if (spo2        != null) values.spo2        = spo2;
+      if (temperature != null) values.temperature = temperature;
+      telemetry.push({ ts: batchTs, values });
+    }
 
-    await postTimeseries(jwtToken, deviceId, telemetry);
+    if (telemetry.length === 0) return res.status(400).json({ error: "Empty payload" });
 
-    return res.status(200).json({ ok: true, device: deviceName, points: n });
+    // Post via device HTTP API — TB marks the device active on each request
+    await postTimeseries(deviceToken, telemetry);
+
+    return res.status(200).json({ ok: true, device: deviceName, points: telemetry.length });
 
   } catch (err) {
     console.error("[ingest]", err.message);
