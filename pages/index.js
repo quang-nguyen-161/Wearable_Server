@@ -629,11 +629,7 @@ function AddNodeModal({ onClose, onCreated, token, gatewayId }) {
     setSaving(true);
     setMsg(null);
     try {
-      const device = await createDevice(token, trimmed);
-      const newId  = device?.id?.id;
-      if (newId && gatewayId) {
-        await addDeviceRelation(token, gatewayId, newId).catch(() => {});
-      }
+      await createDevice(token, trimmed);
       setMsg({ type: "ok", text: `"${trimmed}" created ✓` });
       setTimeout(() => { onCreated(); onClose(); }, 800);
     } catch (e) {
