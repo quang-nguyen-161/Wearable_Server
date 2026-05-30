@@ -1285,6 +1285,58 @@ vercel
 
 ---
 
+## Node Management
+
+The dashboard discovers nodes automatically from ThingsBoard. A device appears as a node card if its **name contains "node"** (case-insensitive). No code changes are needed to add or remove nodes — everything is managed in ThingsBoard.
+
+---
+
+### Adding a New Node
+
+1. **Log in to ThingsBoard** at your `TB_BASE_URL`.
+
+2. **Create a new device:**
+   - Go to **Devices → + Add Device**
+   - Set the name to anything containing "node", e.g. `Node7`, `Node_ICU`, `NodeBed3`
+   - Device profile: default (or match your existing nodes)
+   - Save the device
+
+3. **Link it to the gateway (recommended):**
+   - Open the new device → **Relations tab → + Add relation**
+   - Direction: **From** · Type: `Manages` · Target entity: your **gateway device** (`TB_DEVICE_ID`)
+   - This lets the dashboard's primary discovery path find it via the `Manages` relation query.
+   - If you skip this step, the fallback (`/api/tenant/devices`) still picks it up as long as it shares the same tenant.
+
+4. **Copy the device credentials** (Access Token) if the hardware node needs to push telemetry.
+
+5. **The dashboard picks it up automatically** on the next page load or refresh — no restart required.
+
+> **Naming rule:** the device name must contain the word `node` (case-insensitive). `Node7`, `NODEX`, `sensor-node-2` all work. `Sensor7` or `Device7` will **not** appear.
+
+---
+
+### Deleting / Removing a Node
+
+**Option A — Remove from the dashboard only (keep device in TB):**
+
+Rename the device in ThingsBoard to something that does **not** contain "node" (e.g. `Archived_1`). The dashboard will stop showing it on the next refresh. The device and its historical data remain in ThingsBoard.
+
+**Option B — Delete permanently:**
+
+1. In ThingsBoard go to **Devices**, find the node device.
+2. Delete the **Manages relation** from the gateway first (Relations tab), then delete the device.
+3. The node card disappears from the dashboard on the next refresh.
+
+> **Warning:** deleting a device in ThingsBoard is permanent. All telemetry history for that device is lost. Prefer Option A if you may need the data later.
+
+---
+
+### Reordering Nodes
+
+Node cards are sorted **alphabetically by device name** (see `devices.js` line 87: `sort((a, b) => a.name.localeCompare(b.name))`). To control order, prefix names with a number or letter, e.g. `Node1`, `Node2`, `Node3`.
+
+---
+
 ## Resources
 
 - [Next.js Documentation](https://nextjs.org/docs)

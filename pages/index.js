@@ -14,7 +14,7 @@ import { useNotifications } from "../hooks/useNotifications";
 import { useTrends } from "../hooks/useTrends";
 import { useSettings } from "../context/SettingsContext";
 import { useTbAuth } from "../context/TbAuthContext";
-import { getDevices, getPatientInfo, saveDeviceAttributes } from "../lib/tbBrowserClient";
+import { getDevices, getPatientInfo, saveDeviceAttributes, createDevice, addDeviceRelation, deleteDevice, GATEWAY_ID } from "../lib/tbBrowserClient";
 
 /* ── Vital definitions ─────────────────────────────────────────────── */
 const VITALS = [
@@ -608,6 +608,101 @@ function PatientModal({ patient, deviceId, onClose, onSaved }) {
   );
 }
 
+/* ── Add Node Modal ─────────────────────────────────────────────────── */
+function AddNodeModal({ onClose, onCreated, token, gatewayId }) {
+  const [name,   setName]   = useState("");
+  const [saving, setSaving] = useState(false);
+  const [msg,    setMsg]    = useState(null);
+
+  useEffect(() => {
+    const fn = e => { if (e.key === "Escape") onClose(); };
+    window.addEventListener("keydown", fn);
+    return () => window.removeEventListener("keydown", fn);
+  }, [onClose]);
+
+  const handleCreate = async () => {
+    const trimmed = name.trim();
+    if (!trimmed) { setMsg({ type: "err", text: "Node name is required." }); return; }
+    if (!trimmed.toLowerCase().includes("node")) {
+      setMsg({ type: "err", text: 'Name must contain "node" (e.g. Node7, NodeBed3).' }); return;
+    }
+    setSaving(true);
+    setMsg(null);
+    try {
+      const device = await createDevice(token, trimmed);
+      const newId  = device?.id?.id;
+      if (newId && gatewayId) {
+        await addDeviceRelation(token, gatewayId, newId).catch(() => {});
+      }
+      setMsg({ type: "ok", text: `"${trimmed}" created ✓` });
+      setTimeout(() => { onCreated(); onClose(); }, 800);
+    } catch (e) {
+      setMsg({ type: "err", text: e.message });
+      setSaving(false);
+    }
+  };
+
+  return (
+    <div className="modal-backdrop" onClick={onClose}>
+      <div className="modal-box" style={{ maxWidth: 420 }} onClick={e => e.stopPropagation()}>
+        <div className="modal-header">
+          <span style={{ fontWeight: 700, fontSize: 16 }}>+ Add New Node</span>
+          <button className="modal-close" onClick={onClose}>✕</button>
+        </div>
+        <div style={{ padding: "20px 24px 24px" }}>
+          <label style={{ display: "block", fontSize: 12, fontWeight: 700, color: "var(--text-muted, #64748b)", marginBottom: 6, letterSpacing: "0.05em" }}>
+            DEVICE NAME
+          </label>
+          <input
+            autoFocus
+            type="text"
+            placeholder='e.g. Node7, NodeBed3, NodeICU'
+            value={name}
+            onChange={e => setName(e.target.value)}
+            onKeyDown={e => { if (e.key === "Enter") handleCreate(); }}
+            style={{
+              width: "100%", boxSizing: "border-box",
+              padding: "9px 12px", borderRadius: 8,
+              border: "1.5px solid var(--border, #e2e8f0)",
+              background: "var(--bg-void, #f8fafc)",
+              color: "var(--text-primary, #1e293b)",
+              fontSize: 14, fontWeight: 600,
+              outline: "none",
+            }}
+          />
+          <p style={{ fontSize: 12, color: "var(--text-muted, #94a3b8)", marginTop: 8 }}>
+            Name must contain <strong>node</strong> to appear in the dashboard.
+          </p>
+          {msg && (
+            <div style={{
+              marginTop: 10, padding: "8px 12px", borderRadius: 8, fontSize: 13,
+              background: msg.type === "ok" ? "#d1fae5" : "#fee2e2",
+              color:      msg.type === "ok" ? "#065f46" : "#991b1b",
+            }}>
+              {msg.text}
+            </div>
+          )}
+          <div style={{ display: "flex", gap: 10, marginTop: 20, justifyContent: "flex-end" }}>
+            <button
+              onClick={onClose}
+              style={{ padding: "8px 18px", borderRadius: 8, border: "1px solid var(--border, #e2e8f0)", background: "none", cursor: "pointer", fontSize: 13, color: "var(--text-primary)" }}
+            >
+              Cancel
+            </button>
+            <button
+              onClick={handleCreate}
+              disabled={saving}
+              style={{ padding: "8px 20px", borderRadius: 8, border: "none", background: "var(--cyan, #5B9BD5)", color: "#fff", fontWeight: 700, cursor: saving ? "not-allowed" : "pointer", fontSize: 13, opacity: saving ? 0.7 : 1 }}
+            >
+              {saving ? "Creating…" : "Create Node"}
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 /* ── Main component ─────────────────────────────────────────────────── */
 export default function Dashboard() {
   /* Device list */
@@ -628,6 +723,7 @@ export default function Dashboard() {
   const [overviewModal,    setOverviewModal]    = useState(false);
   const [vitalsMap,        setVitalsMap]        = useState({}); // { [deviceId]: vitals }
   const [notificationsOn,  setNotificationsOn]  = useState(true);
+  const [addNodeModal,     setAddNodeModal]     = useState(false);
 
   /* ── TB token for WebSocket — use browser login token directly ── */
   const { token: tbAuthToken, logout } = useTbAuth();
@@ -704,6 +800,18 @@ export default function Dashboard() {
       setDevicesLoading(false);
     }
   }, [tbAuthToken]);
+
+  /* ── Delete a node device ── */
+  const handleDeleteNode = useCallback(async (deviceId, deviceName) => {
+    if (!window.confirm(`Delete "${deviceName}" from ThingsBoard?\n\nThis is permanent — all telemetry history will be lost.`)) return;
+    try {
+      await deleteDevice(tbAuthToken, deviceId);
+      if (selectedDeviceId === deviceId) setSelectedDeviceId(null);
+      await fetchDevices();
+    } catch (e) {
+      alert(`Failed to delete: ${e.message}`);
+    }
+  }, [tbAuthToken, selectedDeviceId, fetchDevices]);
 
   /* ── Fetch patient info ── */
   const fetchPatient = useCallback(async (deviceId) => {
@@ -914,11 +1022,26 @@ export default function Dashboard() {
                     >
                       ⤢
                     </button>
+                    <button
+                      className="device-detail-btn"
+                      onClick={(e) => { e.stopPropagation(); handleDeleteNode(device.id, device.name); }}
+                      title="Delete node"
+                      style={{ color: "#e53e3e", marginTop: 2 }}
+                    >
+                      ✕
+                    </button>
                   </div>
                 );
               })
             )}
           </div>
+          <button
+            className="add-node-btn"
+            onClick={() => setAddNodeModal(true)}
+            title="Add new node"
+          >
+            + Node
+          </button>
         </div>
 
         {/* ── Patient bar ── */}
@@ -1114,6 +1237,16 @@ export default function Dashboard() {
         />
       )}
 
+      {/* ── Add Node modal ── */}
+      {addNodeModal && (
+        <AddNodeModal
+          token={tbAuthToken}
+          gatewayId={GATEWAY_ID}
+          onClose={() => setAddNodeModal(false)}
+          onCreated={fetchDevices}
+        />
+      )}
+
       {/* ── Patient info modal ── */}
       {patientModal && patient && (
         <PatientModal
@@ -1151,6 +1284,26 @@ export default function Dashboard() {
           background: #f5f7fa;
           border-bottom: 1px solid #e2e8f0;
           transition: background 0.2s, border-color 0.2s;
+        }
+
+        .add-node-btn {
+          flex-shrink: 0;
+          align-self: center;
+          padding: 6px 14px;
+          border-radius: 8px;
+          border: 1.5px dashed var(--border, #cbd5e1);
+          background: none;
+          color: var(--text-muted, #64748b);
+          font-size: 12px;
+          font-weight: 700;
+          cursor: pointer;
+          white-space: nowrap;
+          transition: border-color 0.15s, color 0.15s, background 0.15s;
+        }
+        .add-node-btn:hover {
+          border-color: var(--cyan, #5B9BD5);
+          color: var(--cyan, #5B9BD5);
+          background: rgba(91,155,213,0.06);
         }
 
         .patient-bar--clickable {
