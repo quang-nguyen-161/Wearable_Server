@@ -71,6 +71,7 @@ export default async function handler(req, res) {
 
           return {
             ...device,
+            patientName:         map.patientName || null,
             displayName:         map.patientName || device.name,
             online:              map.active === true || map.active === "true",
             lastActivityTime:    map.lastActivityTime    || null,

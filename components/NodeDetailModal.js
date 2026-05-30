@@ -85,7 +85,7 @@ export default function NodeDetailModal({ device, vitals, onClose }) {
           <div className="modal-title-group">
             <span className="modal-icon">📡</span>
             <div>
-              <div className="modal-device-name">{device.displayName || device.name}</div>
+              <div className="modal-device-name">{device.patientName || device.name}</div>
               <div className="modal-device-id">{device.name} · {device.id}</div>
             </div>
             <span className="modal-live-pill">LIVE</span>

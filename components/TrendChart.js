@@ -71,7 +71,7 @@ const CustomTooltip = ({ active, payload, label, metricKey }) => {
 };
 
 // ── Main component ────────────────────────────────────────────────────────
-export default function TrendChart({ series, metricKey, loading, hideControls = false, isLiveWaveform = false, stroke }) {
+export default function TrendChart({ series, metricKey, loading, hideControls = false, isLiveWaveform = false, stroke, sampleFreqHz = 250 }) {
 
   // Live waveform mode — high-performance, no animation, no controls
   if (isLiveWaveform) {
@@ -87,9 +87,9 @@ export default function TrendChart({ series, metricKey, loading, hideControls = 
         </div>
       );
     }
-    // Show last 5s; downsample to max 500 pts so SVG renders stay fast
+    // Show last 5s; cap display points to avoid SVG perf issues but preserve detail
     const LIVE_WINDOW_MS = 5000;
-    const MAX_DISPLAY    = 500;
+    const MAX_DISPLAY    = Math.min(1000, Math.ceil(sampleFreqHz * 5));
     const latestTs   = series[series.length - 1].ts;
     const windowed   = series.filter(d => d.ts >= latestTs - LIVE_WINDOW_MS);
     const step       = Math.max(1, Math.floor(windowed.length / MAX_DISPLAY));

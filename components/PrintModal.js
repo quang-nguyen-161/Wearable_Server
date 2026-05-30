@@ -190,8 +190,10 @@ export default function PrintModal({ devices, onClose }) {
                     background: selectedDeviceId===d.id ? "rgba(0,200,255,0.08)" : "var(--bg-void,#f8fafc)",
                     color: selectedDeviceId===d.id ? "#00c8ff" : "var(--text-primary,#1e293b)",
                     fontWeight:600, fontSize:12, cursor:"pointer", fontFamily:"inherit",
+                    display:"flex", flexDirection:"column", alignItems:"center", gap:1,
                   }}>
-                    📡 {d.name}
+                    <span>📡 {d.patientName || d.name}</span>
+                    {d.patientName && <span style={{ fontSize:9, opacity:0.6, fontWeight:400 }}>{d.name}</span>}
                   </button>
                 ))}
               </div>
@@ -325,7 +327,7 @@ export default function PrintModal({ devices, onClose }) {
             </div>
             <div style={{ fontSize:11, color:"#64748b", textAlign:"right" }}>
               <div>Printed: {new Date().toLocaleString()}</div>
-              <div>Device: {selectedDevice?.name || "—"}</div>
+              <div>Device: {selectedDevice?.patientName ? `${selectedDevice.patientName} (${selectedDevice.name})` : (selectedDevice?.name || "—")}</div>
             </div>
           </div>
 

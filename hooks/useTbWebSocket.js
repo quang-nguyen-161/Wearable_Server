@@ -5,11 +5,18 @@
 import { useEffect, useRef, useState, useCallback } from "react";
 import { parseWaveformBatch } from "../lib/thingsboard";
 
-const TB_WS_URL   = process.env.NEXT_PUBLIC_TB_WS_URL;
-const MAX_POINTS  = 1500;  // rolling buffer size per signal (~6s at 250Hz)
-const FLUSH_MS    = 16;    // ~60fps render rate
+const TB_WS_URL = process.env.NEXT_PUBLIC_TB_WS_URL;
+const FLUSH_MS  = 16;    // ~60fps render rate
 
-export function useTbWebSocket(deviceId, tbToken) {
+export function useTbWebSocket(deviceId, tbToken, ecgSampleFreq = 250) {
+  // Updated whenever ecgSampleFreq prop changes — refs keep handleMessage/flushLoop stable
+  const sampleIntervalMsRef = useRef(Math.round(1000 / ecgSampleFreq));
+  const maxPointsRef        = useRef(Math.max(1500, ecgSampleFreq * 10));
+  useEffect(() => {
+    sampleIntervalMsRef.current = Math.round(1000 / ecgSampleFreq);
+    maxPointsRef.current        = Math.max(1500, ecgSampleFreq * 10);
+  }, [ecgSampleFreq]);
+
   const wsRef       = useRef(null);
   const activeRef   = useRef(false);
   const flushRef    = useRef(null);
@@ -42,18 +49,20 @@ export function useTbWebSocket(deviceId, tbToken) {
       // ECG
       if (pendingEcg.current.length > 0) {
         const pts = pendingEcg.current.splice(0).sort((a, b) => a.ts - b.ts);
+        const cap = maxPointsRef.current;
         setEcgData(prev => {
           const next = [...prev, ...pts];
-          return next.length > MAX_POINTS ? next.slice(-MAX_POINTS) : next;
+          return next.length > cap ? next.slice(-cap) : next;
         });
       }
 
       // PPG
       if (pendingPpg.current.length > 0) {
         const pts = pendingPpg.current.splice(0).sort((a, b) => a.ts - b.ts);
+        const cap = maxPointsRef.current;
         setPpgData(prev => {
           const next = [...prev, ...pts];
-          return next.length > MAX_POINTS ? next.slice(-MAX_POINTS) : next;
+          return next.length > cap ? next.slice(-cap) : next;
         });
       }
 
@@ -108,8 +117,8 @@ export function useTbWebSocket(deviceId, tbToken) {
         const batchTs    = ecgEntry?.[0] ?? Date.now();
         const ecgRaw     = ecgEntry?.[1] ?? ecgEntry?.value;
         const ppgRaw     = ppgEntry?.[1] ?? ppgEntry?.value;
-        const ecgSamples = parseWaveformBatch(ecgRaw, batchTs);
-        const ppgSamples = parseWaveformBatch(ppgRaw, batchTs);
+        const ecgSamples = parseWaveformBatch(ecgRaw, batchTs, sampleIntervalMsRef.current);
+        const ppgSamples = parseWaveformBatch(ppgRaw, batchTs, sampleIntervalMsRef.current);
         for (const pt of ecgSamples) pendingEcg.current.push(pt);
         for (const pt of ppgSamples) pendingPpg.current.push(pt);
         lastBatchTsRef.current = Date.now();

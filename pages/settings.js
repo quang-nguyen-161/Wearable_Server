@@ -242,14 +242,16 @@ export default function Settings() {
                   key={d.id}
                   className={`device-pill ${selectedDeviceId === d.id ? "device-pill--active" : ""}`}
                   onClick={() => setSelectedDeviceId(d.id)}
+                  style={{ display:"flex", flexDirection:"column", alignItems:"center", gap:2 }}
                 >
-                  📡 {d.name}
+                  <span>📡 {d.patientName || d.name}</span>
+                  {d.patientName && <span style={{ fontSize:"0.7em", opacity:0.6, fontWeight:400 }}>{d.name}</span>}
                 </button>
               ))}
             </div>
             {selectedDevice && (
               <div className="device-id-label">
-                Editing: <span className="mono">{selectedDevice.name}</span>
+                Editing: <span className="mono">{selectedDevice.patientName ? `${selectedDevice.patientName} — ` : ""}{selectedDevice.name}</span>
                 <span className="mono muted"> ({selectedDevice.id})</span>
               </div>
             )}

@@ -79,10 +79,17 @@ export default function OverviewGrid({ devices, vitalsMap, onSelectDevice, selec
             <div style={{ display:"flex", alignItems:"center", justifyContent:"space-between", marginBottom: 10 }}>
               <div style={{ display:"flex", alignItems:"center", gap: 6 }}>
                 <span style={{ fontSize: 14 }}>📡</span>
-                <span style={{ fontSize: 12, fontWeight: 700, letterSpacing:"0.04em",
-                  color: isSelected ? "#00c8ff" : "var(--text-primary, #1e293b)" }}>
-                  {device.displayName || device.name}
-                </span>
+                <div>
+                  <div style={{ fontSize: 12, fontWeight: 700, letterSpacing:"0.04em",
+                    color: isSelected ? "#00c8ff" : "var(--text-primary, #1e293b)" }}>
+                    {device.patientName || device.name}
+                  </div>
+                  {device.patientName && (
+                    <div style={{ fontSize: 9, color: "var(--text-muted, #94a3b8)", marginTop: 1, letterSpacing:"0.03em" }}>
+                      {device.name}
+                    </div>
+                  )}
+                </div>
               </div>
               <div style={{ display:"flex", alignItems:"center", gap: 5 }}>
                 {hasDangerous && (

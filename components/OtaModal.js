@@ -71,7 +71,7 @@ export default function OtaModal({ devices, onClose }) {
     if (!binUrl || !selectedDevice) return;
     setTriggering(true);
     const nodeIdx = devices.findIndex(d => d.id === selectedDevice.id);
-    addLog(`Sending RPC to ESP32 gateway → Central → ${selectedDevice.name} via BLE DFU`);
+    addLog(`Sending RPC to ESP32 gateway → Central → ${selectedDevice.patientName ? `${selectedDevice.patientName} (${selectedDevice.name})` : selectedDevice.name} via BLE DFU`);
     try {
       const res  = await fetch("/api/ota/trigger", {
         method:"POST", headers:{"Content-Type":"application/json"},
@@ -134,7 +134,7 @@ export default function OtaModal({ devices, onClose }) {
             <span>🔌 UART</span><span style={{color:"#00c8ff"}}>→</span>
             <span>📡 nRF52 Central</span><span style={{color:"#00c8ff"}}>→</span>
             <span>📻 BLE DFU</span><span style={{color:"#00c8ff"}}>→</span>
-            <span style={{fontWeight:700,color:"#00c8ff"}}>🎯 {selectedDevice?.name||"Node"}</span>
+            <span style={{fontWeight:700,color:"#00c8ff"}}>🎯 {selectedDevice?.patientName || selectedDevice?.name || "Node"}</span>
           </div>
 
           {/* Node selector */}
@@ -148,8 +148,10 @@ export default function OtaModal({ devices, onClose }) {
                   background:selectedDevice?.id===d.id?"rgba(0,200,255,0.08)":"transparent",
                   color:selectedDevice?.id===d.id?"#00c8ff":"var(--text-primary,#1e293b)",
                   cursor:"pointer",fontFamily:"inherit",
+                  display:"flex",flexDirection:"column",alignItems:"center",gap:1,
                 }}>
-                  {d.online?"🟢":"🔴"} {d.name} <span style={{fontSize:10,opacity:.6}}>idx:{i}</span>
+                  <span>{d.online?"🟢":"🔴"} {d.patientName || d.name} <span style={{fontSize:10,opacity:.6}}>idx:{i}</span></span>
+                  {d.patientName && <span style={{fontSize:9,opacity:.5,fontWeight:400}}>{d.name}</span>}
                 </button>
               ))}
             </div>
@@ -206,7 +208,7 @@ export default function OtaModal({ devices, onClose }) {
             color:"#fff",fontWeight:700,fontSize:13,letterSpacing:"0.06em",
             cursor:binUrl&&!busy?"pointer":"not-allowed",fontFamily:"inherit",
             opacity:triggering?.7:1 }}>
-            {triggering?"SENDING...":`🚀 FLASH ${selectedDevice?.name||"node"} via BLE DFU`}
+            {triggering?"SENDING...":`🚀 FLASH ${selectedDevice?.patientName || selectedDevice?.name || "node"} via BLE DFU`}
           </button>
 
           {/* Log */}

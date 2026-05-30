@@ -643,6 +643,10 @@ export default function Dashboard() {
       .catch((e) => console.error("Token fetch error:", e));
   }, []);
 
+  /* ── Per-device settings (thresholds, vitalInterval, ecgSampleFreq) ── */
+  const { settings, loadSettings } = useSettings(selectedDeviceId);
+  useEffect(() => { loadSettings(); }, [selectedDeviceId, loadSettings]);
+
   /* ── WebSocket: real-time vitals + ECG/PPG for selected node ── */
   const {
     vitals,
@@ -651,11 +655,7 @@ export default function Dashboard() {
     lastBatchTs,
     connected,
     lastUpdate,
-  } = useTbWebSocket(selectedDeviceId, tbToken);
-
-  /* ── Per-device settings (thresholds, vitalInterval, ecgSampleFreq) ── */
-  const { settings, loadSettings } = useSettings(selectedDeviceId);
-  useEffect(() => { loadSettings(); }, [selectedDeviceId, loadSettings]);
+  } = useTbWebSocket(selectedDeviceId, tbToken, settings.ecgSampleFreq);
 
   /* ── No-signal detection (CoAP waveform batches) ── */
   // Timeout = 3× vitalInterval so we don't cry wolf when the interval is long
@@ -901,10 +901,10 @@ export default function Dashboard() {
                         </span>
                         {hasAlert && <span className="alert-dot" />}
                       </div>
-                      <div className="device-card-name">{device.displayName || device.id}</div>
-                      {device.label && (
-                        <div className="device-card-sub">{device.label}</div>
-                      )}
+                      <div className="device-card-name">
+                        {device.patientName || device.name}
+                      </div>
+                      <div className="device-card-sub">{device.name}</div>
                       <div className={`device-online-pill ${device.online === false ? "offline" : ""}`}>
                         {device.online === false ? "OFFLINE" : "LIVE"}
                       </div>
@@ -961,11 +961,9 @@ export default function Dashboard() {
           <div className="active-device-banner">
             <span className="active-device-icon">📡</span>
             <span className="active-device-name">
-              {selectedDevice.name || selectedDevice.id}
+              {selectedDevice.patientName || selectedDevice.name}
             </span>
-            {selectedDevice.label && (
-              <span className="active-device-label">— {selectedDevice.label}</span>
-            )}
+            <span className="active-device-label">— {selectedDevice.name}</span>
             <span className="active-device-id">ID: {selectedDevice.id}</span>
           </div>
         )}
@@ -1049,6 +1047,7 @@ export default function Dashboard() {
                 loading={false}
                 isLiveWaveform={true}
                 stroke="var(--green)"
+                sampleFreqHz={settings.ecgSampleFreq}
               />
             </div>
           )}
@@ -1070,6 +1069,7 @@ export default function Dashboard() {
                 loading={false}
                 isLiveWaveform={true}
                 stroke="var(--cyan)"
+                sampleFreqHz={settings.ecgSampleFreq}
               />
             </div>
           )}
