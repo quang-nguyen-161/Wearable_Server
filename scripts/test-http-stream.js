@@ -53,9 +53,9 @@ const WAVE_INTERVAL_MS   = 1000;  // post every 1s per node (staggered → ~3 re
 const VITAL_INTERVAL_MS  = 15000;
 
 const NODES = [
-  { name: 'Node1', hrBase: 72.0, spo2Base: 98.2, tempBase: 36.6, phaseOffset:   0 },
-  { name: 'Node2', hrBase: 85.0, spo2Base: 96.5, tempBase: 37.1, phaseOffset:  67 },
-  { name: 'Node3', hrBase: 65.0, spo2Base: 97.8, tempBase: 36.4, phaseOffset: 133 },
+  { name: 'Node4', hrBase: 72.0, spo2Base: 98.2, tempBase: 36.6, phaseOffset:   0 },
+  { name: 'Node5', hrBase: 85.0, spo2Base: 96.5, tempBase: 37.1, phaseOffset:  67 },
+  { name: 'Node6', hrBase: 65.0, spo2Base: 97.8, tempBase: 36.4, phaseOffset: 133 },
 ];
 
 const sampleIdx = {};
