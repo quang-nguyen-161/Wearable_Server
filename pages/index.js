@@ -1268,7 +1268,14 @@ export default function Dashboard() {
           patient={patient}
           deviceId={selectedDeviceId}
           onClose={() => setPatientModal(false)}
-          onSaved={(updated) => setPatient(prev => ({ ...prev, ...updated }))}
+          onSaved={(updated) => {
+            setPatient(prev => ({ ...prev, ...updated }));
+            setDevices(prev => prev.map(d =>
+              d.id === selectedDeviceId
+                ? { ...d, patientName: updated.patientName || null, displayName: updated.patientName || d.name }
+                : d
+            ));
+          }}
         />
       )}
 
