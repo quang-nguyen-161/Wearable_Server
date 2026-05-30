@@ -1026,7 +1026,7 @@ export default function Dashboard() {
                       className="device-detail-btn"
                       onClick={(e) => { e.stopPropagation(); handleDeleteNode(device.id, device.name); }}
                       title="Delete node"
-                      style={{ color: "#e53e3e", marginTop: 2 }}
+                      style={{ top: 26, color: "#e53e3e", background: "rgba(229,62,62,0.12)" }}
                     >
                       ✕
                     </button>
