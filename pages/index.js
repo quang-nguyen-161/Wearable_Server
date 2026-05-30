@@ -710,7 +710,7 @@ export default function Dashboard() {
     if (!deviceId || !tbAuthToken) return;
     try {
       const info = await getPatientInfo(tbAuthToken, deviceId);
-      setPatient(info?.patientName ? info : null);
+      setPatient(info ?? null);
     } catch (_) { setPatient(null); }
   }, [tbAuthToken]);
 
