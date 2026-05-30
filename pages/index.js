@@ -13,6 +13,8 @@ import OtaModal from "../components/OtaModal";
 import { useNotifications } from "../hooks/useNotifications";
 import { useTrends } from "../hooks/useTrends";
 import { useSettings } from "../context/SettingsContext";
+import { useTbAuth } from "../context/TbAuthContext";
+import { getDevices, getPatientInfo, saveDeviceAttributes } from "../lib/tbBrowserClient";
 
 /* ── Vital definitions ─────────────────────────────────────────────── */
 const VITALS = [
@@ -304,33 +306,25 @@ function PatientModal({ patient, deviceId, onClose, onSaved }) {
 
   const set = (key, val) => setForm(prev => ({ ...prev, [key]: val }));
 
+  const { token: patientSaveToken } = useTbAuth();
   const handleSave = async () => {
     if (!deviceId) return;
     setSaving(true);
     setSaveMsg(null);
     try {
-      const res = await fetch("/api/attributes/save", {
-        method:  "POST",
-        headers: { "Content-Type": "application/json" },
-        body:    JSON.stringify({
-          deviceId,
-          scope:      "SERVER_SCOPE",
-          attributes: {
-            patientName:    form.patientName,
-            patientId:      form.patientId,
-            ward:           form.ward,
-            physician:      form.physician,
-            age:            form.age ? Number(form.age) : null,
-            gender:         form.gender,
-            bloodType:      form.bloodType,
-            weight:         form.weight ? Number(form.weight) : null,
-            hospitalPhone:  form.hospitalPhone,
-            physicianPhone: form.physicianPhone,
-            familyPhone:    form.familyPhone,
-          },
-        }),
+      await saveDeviceAttributes(patientSaveToken, deviceId, "SERVER_SCOPE", {
+        patientName:    form.patientName,
+        patientId:      form.patientId,
+        ward:           form.ward,
+        physician:      form.physician,
+        age:            form.age ? Number(form.age) : null,
+        gender:         form.gender,
+        bloodType:      form.bloodType,
+        weight:         form.weight ? Number(form.weight) : null,
+        hospitalPhone:  form.hospitalPhone,
+        physicianPhone: form.physicianPhone,
+        familyPhone:    form.familyPhone,
       });
-      if (!res.ok) throw new Error("Save failed");
       setSaveMsg({ type: "ok", text: "Saved to ThingsBoard ✓" });
       setEditing(false);
       onSaved(form); // update parent state so bar refreshes
@@ -635,13 +629,11 @@ export default function Dashboard() {
   const [vitalsMap,        setVitalsMap]        = useState({}); // { [deviceId]: vitals }
   const [notificationsOn,  setNotificationsOn]  = useState(true);
 
-  /* ── Fetch TB token for WebSocket ── */
+  /* ── TB token for WebSocket — use browser login token directly ── */
+  const { token: tbAuthToken, logout } = useTbAuth();
   useEffect(() => {
-    fetch("/api/auth/token")
-      .then((r) => r.json())
-      .then((j) => setTbToken(j.token))
-      .catch((e) => console.error("Token fetch error:", e));
-  }, []);
+    if (tbAuthToken) setTbToken(tbAuthToken);
+  }, [tbAuthToken]);
 
   /* ── Per-device settings (thresholds, vitalInterval, ecgSampleFreq) ── */
   const { settings, loadSettings } = useSettings(selectedDeviceId);
@@ -699,12 +691,10 @@ export default function Dashboard() {
 
   /* ── Fetch device list ── */
   const fetchDevices = useCallback(async () => {
+    if (!tbAuthToken) return;
     setDevicesLoading(true);
     try {
-      const res  = await fetch("/api/devices");
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      const json = await res.json();
-      const list = json.devices || [];
+      const list = await getDevices(tbAuthToken);
       setDevices(list);
       if (list.length > 0 && !selectedDeviceId) setSelectedDeviceId(list[0].id);
     } catch (err) {
@@ -713,26 +703,27 @@ export default function Dashboard() {
     } finally {
       setDevicesLoading(false);
     }
-  }, []);
+  }, [tbAuthToken]);
 
-  /* ── Fetch patient info (still HTTP — changes rarely) ── */
+  /* ── Fetch patient info ── */
   const fetchPatient = useCallback(async (deviceId) => {
-    if (!deviceId) return;
+    if (!deviceId || !tbAuthToken) return;
     try {
-      const res  = await fetch(`/api/patient?deviceId=${deviceId}`);
-      if (!res.ok) { setPatient(null); return; }
-      const json = await res.json();
-      setPatient(json.info || null);
+      const info = await getPatientInfo(tbAuthToken, deviceId);
+      setPatient(info?.patientName ? info : null);
     } catch (_) { setPatient(null); }
-  }, []);
+  }, [tbAuthToken]);
 
   /* ── Init ── */
   useEffect(() => {
     const savedTheme = localStorage.getItem("theme") || "light";
     setTheme(savedTheme);
     document.documentElement.setAttribute("data-theme", savedTheme);
-    fetchDevices();
   }, []);
+
+  useEffect(() => {
+    if (tbAuthToken) fetchDevices();
+  }, [tbAuthToken, fetchDevices]);
 
   /* ── On device change: fetch patient (WS handles vitals/signals) ── */
   useEffect(() => {
@@ -859,6 +850,13 @@ export default function Dashboard() {
               onClick={fetchDevices}
             >
               ⟳ REFRESH
+            </button>
+            <button
+              className="refresh-btn"
+              style={{ margin: "2px 2px 0", opacity: 0.7 }}
+              onClick={logout}
+            >
+              ⏻ SIGN OUT
             </button>
           </div>
         </aside>

@@ -47,7 +47,7 @@ const INGEST_PATH    = '/api/telemetry/ingest';
 
 const TB_BASE_URL = process.env.TB_BASE_URL || '';
 
-const BATCH_SIZE         = 250;   // samples per POST
+const BATCH_SIZE         = 50;    // samples per POST — keep ≤50 for TB Cloud rate limits
 const SAMPLE_INTERVAL_MS = 4;     // 4ms per sample = 250Hz
 const WAVE_INTERVAL_MS   = 1000;  // post every 1s per node (staggered → ~3 req/sec total)
 const VITAL_INTERVAL_MS  = 15000;

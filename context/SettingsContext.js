@@ -5,6 +5,8 @@
 // values immediately without a round-trip.
 
 import { createContext, useContext, useRef, useState, useCallback } from "react";
+import { useTbAuth } from "./TbAuthContext";
+import { getDeviceAttributes } from "../lib/tbBrowserClient";
 
 export const DEFAULT_THRESHOLDS = {
   ppgHeartRate: { normalMin: 60,   normalMax: 100,  warnMin: 50,   warnMax: 120,  dangerMin: 40,   dangerMax: 130  },
@@ -24,6 +26,7 @@ const SettingsContext = createContext(null);
 
 // ── Provider ──────────────────────────────────────────────────────────────────
 export function SettingsProvider({ children }) {
+  const { token } = useTbAuth();
   const cacheRef = useRef({});          // deviceId → settings (avoids stale-closure guard)
   const [cache, setCache] = useState({}); // same data, but triggers re-renders
 
@@ -34,11 +37,9 @@ export function SettingsProvider({ children }) {
 
   // Load settings for a device (no-op if already cached)
   const loadSettings = useCallback(async (deviceId) => {
-    if (!deviceId || cacheRef.current[deviceId]) return;
+    if (!deviceId || cacheRef.current[deviceId] || !token) return;
     try {
-      const res  = await fetch(`/api/attributes/load?deviceId=${deviceId}`);
-      const json = await res.json();
-      const a    = json.attributes || {};
+      const a = await getDeviceAttributes(token, deviceId);
 
       const settings = {
         vitalInterval:     a.vitalInterval     ?? DEFAULT_SETTINGS.vitalInterval,

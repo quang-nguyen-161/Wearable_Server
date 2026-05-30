@@ -10,6 +10,8 @@ import { useRouter } from "next/router";
 import Head from "next/head";
 import Link from "next/link";
 import { useSettings } from "../context/SettingsContext";
+import { useTbAuth } from "../context/TbAuthContext";
+import { getDevices, getDeviceAttributes, saveDeviceAttributes } from "../lib/tbBrowserClient";
 
 // ── Defaults ────────────────────────────────────────────────────────────────
 const DEFAULT_THRESHOLDS = {
@@ -33,6 +35,7 @@ const DEFAULT_ECG_PACKET_INTERVAL = 20; // ms — how often ECG packets are sent
 // ── Settings page ────────────────────────────────────────────────────────────
 export default function Settings() {
   const router = useRouter();
+  const { token } = useTbAuth();
 
   const [devices,            setDevices]            = useState([]);
   const [selectedDeviceId,   setSelectedDeviceId]   = useState(null);
@@ -55,26 +58,22 @@ export default function Settings() {
 
   // ── Load device list ───────────────────────────────────────────────────
   useEffect(() => {
-    fetch("/api/devices")
-      .then(r => r.json())
-      .then(j => {
-        const list = j.devices || [];
+    if (!token) return;
+    getDevices(token)
+      .then(list => {
         setDevices(list);
-        // Pre-select from query param or first device
         const qId = router.query.deviceId;
         setSelectedDeviceId(qId && list.find(d => d.id === qId) ? qId : list[0]?.id ?? null);
       })
       .catch(console.error);
-  }, [router.query.deviceId]);
+  }, [token, router.query.deviceId]);
 
   // ── Load existing attributes when device changes ────────────────────────
   const loadAttributes = useCallback(async (deviceId) => {
-    if (!deviceId) return;
+    if (!deviceId || !token) return;
     setLoading(true);
     try {
-      const res  = await fetch(`/api/attributes/load?deviceId=${deviceId}`);
-      const json = await res.json();
-      const a    = json.attributes || {};
+      const a = await getDeviceAttributes(token, deviceId);
 
       setThresholds({
         ppgHeartRate: {
@@ -118,7 +117,7 @@ export default function Settings() {
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [token]);
 
   useEffect(() => {
     if (selectedDeviceId) loadAttributes(selectedDeviceId);
@@ -159,31 +158,10 @@ export default function Settings() {
     };
 
     try {
-      // 1. Save thresholds as SERVER_SCOPE (dashboard reads these)
-      const r1 = await fetch("/api/attributes/save", {
-        method:  "POST",
-        headers: { "Content-Type": "application/json" },
-        body:    JSON.stringify({
-          deviceId:   selectedDeviceId,
-          scope:      "SERVER_SCOPE",
-          attributes: serverAttrs,
-        }),
-      });
-
-      // 2. Save firmware-read settings as SHARED_SCOPE
-      const r2 = await fetch("/api/attributes/save", {
-        method:  "POST",
-        headers: { "Content-Type": "application/json" },
-        body:    JSON.stringify({
-          deviceId:   selectedDeviceId,
-          scope:      "SHARED_SCOPE",
-          attributes: { vitalInterval, ecgSampleFreq, ecgPacketInterval },
-        }),
-      });
-
-      if (!r1.ok || !r2.ok) throw new Error("Save failed");
-
-      // Push into global context so dashboard reflects new values immediately
+      await Promise.all([
+        saveDeviceAttributes(token, selectedDeviceId, "SERVER_SCOPE", serverAttrs),
+        saveDeviceAttributes(token, selectedDeviceId, "SHARED_SCOPE", { vitalInterval, ecgSampleFreq, ecgPacketInterval }),
+      ]);
       updateSettings({ vitalInterval, ecgSampleFreq, ecgPacketInterval, thresholds });
 
       setSaveMsg({ type: "ok", text: "Settings saved to ThingsBoard ✓" });

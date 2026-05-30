@@ -70,15 +70,20 @@ async function resolveDevice(jwtToken, name) {
   return deviceCache[name];
 }
 
+const TELEMETRY_CHUNK = 50; // TB Cloud rejects large batches; keep ≤50 pts per request
+
 async function postTimeseries(deviceToken, telemetry) {
-  const res = await fetch(`${TB_URL}/api/v1/${deviceToken}/telemetry`, {
-    method:  "POST",
-    headers: { "Content-Type": "application/json" },
-    body:    JSON.stringify(telemetry),
-  });
-  if (!res.ok) {
-    const text = await res.text();
-    throw new Error(`TB device API ${res.status}: ${text.slice(0, 200)}`);
+  for (let i = 0; i < telemetry.length; i += TELEMETRY_CHUNK) {
+    const chunk = telemetry.slice(i, i + TELEMETRY_CHUNK);
+    const res = await fetch(`${TB_URL}/api/v1/${deviceToken}/telemetry`, {
+      method:  "POST",
+      headers: { "Content-Type": "application/json" },
+      body:    JSON.stringify(chunk),
+    });
+    if (!res.ok) {
+      const text = await res.text();
+      throw new Error(`TB device API ${res.status}: ${text.slice(0, 200)}`);
+    }
   }
 }
 
