@@ -12,13 +12,24 @@ import PrintModal from "../components/PrintModal";
 import OtaModal from "../components/OtaModal";
 import { useNotifications } from "../hooks/useNotifications";
 import { useTrends } from "../hooks/useTrends";
+import { useSettings } from "../context/SettingsContext";
 
 /* ── Vital definitions ─────────────────────────────────────────────── */
 const VITALS = [
   {
-    key: "heartRate",
-    label: "HEART RATE",
+    key: "ppgHeartRate",
+    label: "PPG HEART RATE",
     icon: "❤️",
+    unit: "bpm",
+    color: "cyan",
+    min: 60, max: 100,
+    warnMin: 50,  warnMax: 120,
+    dangerMin: 40, dangerMax: 130,
+  },
+  {
+    key: "ecgHeartRate",
+    label: "ECG HEART RATE",
+    icon: "💓",
     unit: "bpm",
     color: "cyan",
     min: 60, max: 100,
@@ -642,21 +653,27 @@ export default function Dashboard() {
     lastUpdate,
   } = useTbWebSocket(selectedDeviceId, tbToken);
 
+  /* ── Per-device settings (thresholds, vitalInterval, ecgSampleFreq) ── */
+  const { settings, loadSettings } = useSettings(selectedDeviceId);
+  useEffect(() => { loadSettings(); }, [selectedDeviceId, loadSettings]);
+
   /* ── No-signal detection (CoAP waveform batches) ── */
+  // Timeout = 3× vitalInterval so we don't cry wolf when the interval is long
   const [noSignal, setNoSignal] = useState(false);
   useEffect(() => {
     if (!lastBatchTs) return;
     setNoSignal(false);
-    const timer = setTimeout(() => setNoSignal(true), 10000);
+    const timeout = Math.max(settings.vitalInterval * 3, 10000);
+    const timer = setTimeout(() => setNoSignal(true), timeout);
     return () => clearTimeout(timer);
-  }, [lastBatchTs]);
+  }, [lastBatchTs, settings.vitalInterval]);
 
   /* ── Trend arrows for current node ── */
   const trends = useTrends(vitals);
 
   /* ── Push notifications + sound for selected node ── */
   const selectedDevice = devices.find(d => d.id === selectedDeviceId);
-  useNotifications(selectedDevice?.name, vitals, notificationsOn);
+  useNotifications(selectedDevice?.name, vitals, notificationsOn, settings.thresholds);
 
   /* ── Sync vitals into vitalsMap for OverviewGrid ── */
   useEffect(() => {
@@ -667,15 +684,18 @@ export default function Dashboard() {
   /* ── Track per-device alerts from live vitals ── */
   useEffect(() => {
     if (!selectedDeviceId || !vitals) return;
-    const hr   = vitals?.heartRate?.value;
-    const spo2 = vitals?.spo2?.value;
-    const temp = vitals?.temperature?.value;
+    const { thresholds } = settings;
+    const ppgHr = vitals?.ppgHeartRate?.value;
+    const ecgHr = vitals?.ecgHeartRate?.value;
+    const spo2  = vitals?.spo2?.value;
+    const temp  = vitals?.temperature?.value;
     const hasAlert =
-      (hr   != null && (hr < 40 || hr > 130))   ||
-      (spo2 != null && spo2 < 88)                ||
-      (temp != null && (temp < 35.0 || temp > 39.5));
+      (ppgHr != null && (ppgHr < thresholds.ppgHeartRate.dangerMin || ppgHr > thresholds.ppgHeartRate.dangerMax)) ||
+      (ecgHr != null && (ecgHr < thresholds.ecgHeartRate.dangerMin || ecgHr > thresholds.ecgHeartRate.dangerMax)) ||
+      (spo2  != null && (spo2  < thresholds.spo2.dangerMin         || spo2  > thresholds.spo2.dangerMax))         ||
+      (temp  != null && (temp  < thresholds.temperature.dangerMin  || temp  > thresholds.temperature.dangerMax));
     setDeviceAlerts((prev) => ({ ...prev, [selectedDeviceId]: hasAlert }));
-  }, [vitals, selectedDeviceId]);
+  }, [vitals, selectedDeviceId, settings]);
 
   /* ── Fetch device list ── */
   const fetchDevices = useCallback(async () => {
@@ -977,6 +997,7 @@ export default function Dashboard() {
               const trend = trends[v.key];
               const trendIcon  = trend === "up" ? "↑" : trend === "down" ? "↓" : null;
               const trendColor = trend === "up" ? "#ef4444" : trend === "down" ? "#3b82f6" : null;
+              const t = settings.thresholds[v.key];
               return (
                 <div
                   key={`${selectedDeviceId}-${v.key}`}
@@ -997,12 +1018,12 @@ export default function Dashboard() {
                     icon={v.icon}
                     unit={v.unit}
                     color={v.color}
-                    min={v.min}
-                    max={v.max}
-                    warnMin={v.warnMin}
-                    warnMax={v.warnMax}
-                    dangerMin={v.dangerMin}
-                    dangerMax={v.dangerMax}
+                    min={t?.normalMin ?? v.min}
+                    max={t?.normalMax ?? v.max}
+                    warnMin={t?.warnMin ?? v.warnMin}
+                    warnMax={t?.warnMax ?? v.warnMax}
+                    dangerMin={t?.dangerMin ?? v.dangerMin}
+                    dangerMax={t?.dangerMax ?? v.dangerMax}
                     value={getValue(v.key)}
                     loading={!connected && !getValue(v.key)}
                     animDelay={i * 60}
@@ -1016,7 +1037,7 @@ export default function Dashboard() {
             <div className="chart-section chart-section--clickable" onClick={() => setSignalModal({ key: "ecg" })}>
               <div className="chart-header">
                 <span className="chart-title">ECG SIGNAL</span>
-                <span className="chart-subtitle">(Live · HTTPS · 100Hz)</span>
+                <span className="chart-subtitle">(Live · {settings.ecgSampleFreq}Hz · pkt {settings.ecgPacketInterval}ms)</span>
                 <span className="chart-badge" style={{ color: noSignal ? "var(--amber)" : "var(--green)" }}>
                   {noSignal ? "NO SIGNAL" : "LIVE"}
                 </span>
@@ -1037,7 +1058,7 @@ export default function Dashboard() {
             <div className="chart-section chart-section--clickable" onClick={() => setSignalModal({ key: "ppg" })}>
               <div className="chart-header">
                 <span className="chart-title">PPG / SpO₂ WAVEFORM</span>
-                <span className="chart-subtitle">(Live · HTTPS · 100Hz)</span>
+                <span className="chart-subtitle">(Live · {settings.ecgSampleFreq}Hz · vitals {settings.vitalInterval}ms)</span>
                 <span className="chart-badge" style={{ color: noSignal ? "var(--amber)" : "var(--cyan)" }}>
                   {noSignal ? "NO SIGNAL" : "LIVE"}
                 </span>

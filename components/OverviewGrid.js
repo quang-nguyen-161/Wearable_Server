@@ -3,15 +3,17 @@
 // Click a node card to navigate to it in the main dashboard.
 
 const VITAL_META = {
-  heartRate:   { label: "HR",   unit: "bpm", color: "#5B9BD5" },
-  spo2:        { label: "SpO₂", unit: "%",   color: "#70AD47" },
-  temperature: { label: "Temp", unit: "°C",  color: "#FFC000" },
+  ppgHeartRate: { label: "PPG HR", unit: "bpm", color: "#5B9BD5" },
+  ecgHeartRate: { label: "ECG HR", unit: "bpm", color: "#00c8ff" },
+  spo2:         { label: "SpO₂",   unit: "%",   color: "#70AD47" },
+  temperature:  { label: "Temp",   unit: "°C",  color: "#FFC000" },
 };
 
 const THRESHOLDS = {
-  heartRate:   { normalMin:60,   normalMax:100,  warnMin:50,  warnMax:120, dangerMin:40,   dangerMax:130  },
-  spo2:        { normalMin:95,   normalMax:100,  warnMin:90,  warnMax:100, dangerMin:88,   dangerMax:100  },
-  temperature: { normalMin:36.1, normalMax:37.2, warnMin:35.5,warnMax:38.5,dangerMin:35.0, dangerMax:39.5 },
+  ppgHeartRate: { normalMin:60,   normalMax:100,  warnMin:50,  warnMax:120, dangerMin:40,   dangerMax:130  },
+  ecgHeartRate: { normalMin:60,   normalMax:100,  warnMin:50,  warnMax:120, dangerMin:40,   dangerMax:130  },
+  spo2:         { normalMin:95,   normalMax:100,  warnMin:90,  warnMax:100, dangerMin:88,   dangerMax:100  },
+  temperature:  { normalMin:36.1, normalMax:37.2, warnMin:35.5,warnMax:38.5,dangerMin:35.0, dangerMax:39.5 },
 };
 
 function getStatus(key, value) {
@@ -101,8 +103,8 @@ export default function OverviewGrid({ devices, vitalsMap, onSelectDevice, selec
               </div>
             </div>
 
-            {/* Vitals row */}
-            <div style={{ display:"grid", gridTemplateColumns:"repeat(3,1fr)", gap: 6 }}>
+            {/* Vitals row — 2×2 grid for 4 vitals */}
+            <div style={{ display:"grid", gridTemplateColumns:"repeat(2,1fr)", gap: 6 }}>
               {Object.entries(VITAL_META).map(([key, meta]) => {
                 const val    = vitals[key]?.value;
                 const status = getStatus(key, val);
@@ -119,7 +121,7 @@ export default function OverviewGrid({ devices, vitalsMap, onSelectDevice, selec
                       {meta.label}
                     </div>
                     <div style={{ fontSize: 13, fontWeight: 700, color: meta.color, lineHeight: 1 }}>
-                      {val != null ? val.toFixed(key === "heartRate" ? 0 : 1) : "—"}
+                      {val != null ? val.toFixed(key === "ppgHeartRate" || key === "ecgHeartRate" ? 0 : 1) : "—"}
                       <span style={{ fontSize: 9, fontWeight: 400, marginLeft: 2,
                         color: "var(--text-muted, #94a3b8)" }}>{meta.unit}</span>
                     </div>

@@ -8,7 +8,7 @@ const WINDOW = 10;        // number of past readings to average
 const STABLE_BAND = 0.02; // % change below which trend is "stable"
 
 export function useTrends(vitals) {
-  const history = useRef({ heartRate:[], spo2:[], temperature:[] });
+  const history = useRef({ ppgHeartRate:[], ecgHeartRate:[], spo2:[], temperature:[] });
   const [trends, setTrends] = useState({});
 
   useEffect(() => {
@@ -16,7 +16,7 @@ export function useTrends(vitals) {
 
     const newTrends = {};
 
-    for (const key of ["heartRate", "spo2", "temperature"]) {
+    for (const key of ["ppgHeartRate", "ecgHeartRate", "spo2", "temperature"]) {
       const current = vitals[key]?.value;
       if (current == null) continue;
 
@@ -40,5 +40,5 @@ export function useTrends(vitals) {
     setTrends(prev => ({ ...prev, ...newTrends }));
   }, [vitals]);
 
-  return trends; // { heartRate: "up"|"down"|"stable", ... }
+  return trends; // { ppgHeartRate: "up"|"down"|"stable", ecgHeartRate: ..., ... }
 }

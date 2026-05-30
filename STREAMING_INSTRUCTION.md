@@ -27,7 +27,7 @@
 | Stream | Protocol | Data | Rate | Delivery |
 |---|---|---|---|---|
 | Raw waveforms | **HTTPS POST** → `/api/telemetry/ingest` | `ecg_batch`, `ppg_batch` | 100 Hz (50-sample batch every 500ms) | Best-effort |
-| Vital parameters | **MQTT gateway** → ThingsBoard | `heartRate`, `spo2`, `temperature` | Every 15s | QoS 0 |
+| Vital parameters | **MQTT gateway** → ThingsBoard | `ecgHeartRate`, `ppgHeartRate`, `spo2`, `temperature` | Every 15s | QoS 0 |
 
 ---
 
@@ -109,7 +109,7 @@ Paste into `firmware/src/main.cpp` → `GATEWAY_TOKEN`.
 **MQTT gateway telemetry format** (sent by the firmware):
 ```json
 {
-  "Node1": [{ "ts": 1716854400000, "values": { "heartRate": 72.0, "spo2": 98.5, "temperature": 36.6 } }]
+  "Node1": [{ "ts": 1716854400000, "values": { "ecgHeartRate": 72.0, "ppgHeartRate": 71.0, "spo2": 98.5, "temperature": 36.6 } }]
 }
 ```
 
@@ -121,8 +121,10 @@ Set up in: `Entities → Devices → your sensor device → Alarm Rules`
 
 | Name | Condition | Severity |
 |---|---|---|
-| HIGH_HEART_RATE | heartRate > 130 | Critical |
-| LOW_HEART_RATE | heartRate < 40 | Critical |
+| HIGH_ECG_HEART_RATE | ecgHeartRate > 130 | Critical |
+| LOW_ECG_HEART_RATE  | ecgHeartRate < 40  | Critical |
+| HIGH_PPG_HEART_RATE | ppgHeartRate > 130 | Critical |
+| LOW_PPG_HEART_RATE  | ppgHeartRate < 40  | Critical |
 | CRITICAL_LOW_SPO2 | spo2 < 88 | Critical |
 | LOW_SPO2 | spo2 < 94 | Warning |
 | HIGH_TEMP | temperature > 39.5 | Critical |
@@ -302,7 +304,7 @@ Dashboard
 ESP32
   → computeHR / computeSpO2 / readTemperature every 15s
   → MQTT PUBLISH v1/gateway/telemetry
-  → payload: { "Node1": [{ ts, values:{heartRate, spo2, temperature} }] }
+  → payload: { "Node1": [{ ts, values:{ecgHeartRate, ppgHeartRate, spo2, temperature} }] }
 
 ThingsBoard MQTT Broker
   → stores telemetry under device "Node1"
@@ -481,7 +483,7 @@ No server-side changes needed.
 - [ ] ESP32 sends HTTPS POST batches every 500ms (50 samples × 10ms at 100Hz)
 - [ ] ESP32 sends MQTT gateway vitals every 15s
 - [ ] ThingsBoard creates `Node1` device automatically on first MQTT publish
-- [ ] `ecg`, `ppg`, `heartRate`, `spo2`, `temperature` visible in TB Latest Telemetry
+- [ ] `ecg`, `ppg`, `ecgHeartRate`, `ppgHeartRate`, `spo2`, `temperature` visible in TB Latest Telemetry
 - [ ] Ingest API returns `{ ok: true, points: 50 }` per batch
 - [ ] Dashboard waveform charts update from TB history/WebSocket
 - [ ] HR / SpO2 / Temp VitalCards update from both WS and REST

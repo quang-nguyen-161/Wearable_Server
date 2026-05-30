@@ -112,7 +112,8 @@ function startLoop() {
 
         // Attach vitals only to the first sample of each batch
         if (i === 0) {
-          entry.values.heartRate   = s.hr;
+          entry.values.ecgHeartRate = s.hr;
+          entry.values.ppgHeartRate = s.hr;
           entry.values.spo2        = s.spo2;
           entry.values.temperature = s.temp;
         }

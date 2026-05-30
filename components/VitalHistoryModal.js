@@ -2,9 +2,10 @@
 import { useState, useEffect, useCallback, useRef } from "react";
 
 const VITAL_META = {
-  heartRate:   { label: "Heart Rate",  unit: "bpm", normalMin: 60,   normalMax: 100,  warnMin: 50,  warnMax: 120, dangerMin: 40,   dangerMax: 130  },
-  spo2:        { label: "SpO₂",        unit: "%",   normalMin: 95,   normalMax: 100,  warnMin: 90,  warnMax: 100, dangerMin: 88,   dangerMax: 100  },
-  temperature: { label: "Temperature", unit: "°C",  normalMin: 36.1, normalMax: 37.2, warnMin: 35.5,warnMax: 38.5,dangerMin: 35.0, dangerMax: 39.5 },
+  ppgHeartRate: { label: "PPG Heart Rate", unit: "bpm", normalMin: 60,   normalMax: 100,  warnMin: 50,  warnMax: 120, dangerMin: 40,   dangerMax: 130  },
+  ecgHeartRate: { label: "ECG Heart Rate", unit: "bpm", normalMin: 60,   normalMax: 100,  warnMin: 50,  warnMax: 120, dangerMin: 40,   dangerMax: 130  },
+  spo2:         { label: "SpO₂",           unit: "%",   normalMin: 95,   normalMax: 100,  warnMin: 90,  warnMax: 100, dangerMin: 88,   dangerMax: 100  },
+  temperature:  { label: "Temperature",    unit: "°C",  normalMin: 36.1, normalMax: 37.2, warnMin: 35.5,warnMax: 38.5,dangerMin: 35.0, dangerMax: 39.5 },
 };
 
 function getColor(meta, v) {
@@ -244,7 +245,7 @@ export default function VitalHistoryModal({ vitalKey, deviceId, currentValue, on
         <div style={{ display:"flex", alignItems:"center", justifyContent:"space-between", padding:"14px 20px", borderBottom:"0.5px solid var(--color-border-tertiary,#e2e8f0)", flexWrap:"wrap", gap:10 }}>
           <div style={{ display:"flex", alignItems:"center", gap:10 }}>
             <div style={{ width:36, height:36, borderRadius:8, background:`${liveColor}20`, display:"flex", alignItems:"center", justifyContent:"center", fontSize:18 }}>
-              {vitalKey==="heartRate"?"♥":vitalKey==="spo2"?"💧":"🌡"}
+              {vitalKey==="ppgHeartRate"?"❤️":vitalKey==="ecgHeartRate"?"💓":vitalKey==="spo2"?"💧":"🌡"}
             </div>
             <div>
               <div style={{ fontSize:15, fontWeight:700, color:"var(--color-text-primary,#1e293b)" }}>{meta.label} History</div>

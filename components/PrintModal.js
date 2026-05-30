@@ -3,16 +3,18 @@ import { useState, useEffect, useCallback } from "react";
 import { exportCsv } from "../lib/exportCsv";
 
 const VITAL_META = {
-  heartRate:   { label: "Heart Rate",   unit: "bpm", color: "#5B9BD5" },
-  spo2:        { label: "SpO₂",         unit: "%",   color: "#70AD47" },
-  temperature: { label: "Temperature",  unit: "°C",  color: "#FFC000" },
+  ppgHeartRate: { label: "PPG Heart Rate", unit: "bpm", color: "#5B9BD5" },
+  ecgHeartRate: { label: "ECG Heart Rate", unit: "bpm", color: "#00c8ff" },
+  spo2:         { label: "SpO₂",           unit: "%",   color: "#70AD47" },
+  temperature:  { label: "Temperature",    unit: "°C",  color: "#FFC000" },
 };
 
 function getStatus(key, value) {
   const THRESHOLDS = {
-    heartRate:   { normalMin:60,   normalMax:100,  warnMin:50,  warnMax:120, dangerMin:40,   dangerMax:130  },
-    spo2:        { normalMin:95,   normalMax:100,  warnMin:90,  warnMax:100, dangerMin:88,   dangerMax:100  },
-    temperature: { normalMin:36.1, normalMax:37.2, warnMin:35.5,warnMax:38.5,dangerMin:35.0, dangerMax:39.5 },
+    ppgHeartRate: { normalMin:60,   normalMax:100,  warnMin:50,  warnMax:120, dangerMin:40,   dangerMax:130  },
+    ecgHeartRate: { normalMin:60,   normalMax:100,  warnMin:50,  warnMax:120, dangerMin:40,   dangerMax:130  },
+    spo2:         { normalMin:95,   normalMax:100,  warnMin:90,  warnMax:100, dangerMin:88,   dangerMax:100  },
+    temperature:  { normalMin:36.1, normalMax:37.2, warnMin:35.5,warnMax:38.5,dangerMin:35.0, dangerMax:39.5 },
   };
   const t = THRESHOLDS[key];
   if (!t || value == null) return "—";
@@ -41,8 +43,8 @@ export default function PrintModal({ devices, onClose }) {
   const [patient,   setPatient]   = useState(null);
   const [startTs,   setStartTs]   = useState(Date.now() - 3600_000);
   const [endTs,     setEndTs]     = useState(Date.now());
-  const [include,   setInclude]   = useState({ heartRate:true, spo2:true, temperature:true, ecg:true, ppg:false });
-  const [data,      setData]      = useState({});   // { heartRate: [{ts,value}], ... }
+  const [include,   setInclude]   = useState({ ppgHeartRate:true, ecgHeartRate:true, spo2:true, temperature:true, ecg:true, ppg:false });
+  const [data,      setData]      = useState({});   // { ppgHeartRate: [{ts,value}], ... }
   const [loading,   setLoading]   = useState(false);
   const [csvLoading,setCsvLoading]= useState(false);
   const [fetched,   setFetched]   = useState(false);
@@ -239,11 +241,12 @@ export default function PrintModal({ devices, onClose }) {
               <div style={labelStyle}>INCLUDE IN REPORT</div>
               <div style={{ display:"flex", flexWrap:"wrap", gap:8, marginTop:8 }}>
                 {[
-                  { key:"heartRate",   label:"Heart Rate",  icon:"♥"  },
-                  { key:"spo2",        label:"SpO₂",        icon:"💧" },
-                  { key:"temperature", label:"Temperature", icon:"🌡" },
-                  { key:"ecg",         label:"ECG Signal",  icon:"〜" },
-                  { key:"ppg",         label:"PPG Signal",  icon:"〜" },
+                  { key:"ppgHeartRate", label:"PPG Heart Rate", icon:"❤️" },
+                  { key:"ecgHeartRate", label:"ECG Heart Rate", icon:"💓" },
+                  { key:"spo2",         label:"SpO₂",           icon:"💧" },
+                  { key:"temperature",  label:"Temperature",    icon:"🌡" },
+                  { key:"ecg",          label:"ECG Signal",     icon:"〜" },
+                  { key:"ppg",          label:"PPG Signal",     icon:"〜" },
                 ].map(({ key, label, icon }) => (
                   <button key={key} onClick={() => { setInclude(prev => ({...prev, [key]:!prev[key]})); setFetched(false); }} style={{
                     display:"flex", alignItems:"center", gap:6,
@@ -356,7 +359,7 @@ export default function PrintModal({ devices, onClose }) {
           </div>
 
           {/* Vital stats table */}
-          {Object.keys(data).some(k => ["heartRate","spo2","temperature"].includes(k)) && (
+          {Object.keys(data).some(k => ["ppgHeartRate","ecgHeartRate","spo2","temperature"].includes(k)) && (
             <div style={{ marginBottom:24 }}>
               <div style={{ fontSize:12, fontWeight:700, letterSpacing:"0.08em", color:"#64748b", marginBottom:10 }}>VITAL SIGNS SUMMARY</div>
               <table style={{ width:"100%", borderCollapse:"collapse", fontSize:12 }}>
@@ -368,7 +371,7 @@ export default function PrintModal({ devices, onClose }) {
                   </tr>
                 </thead>
                 <tbody>
-                  {["heartRate","spo2","temperature"].map(key => {
+                  {["ppgHeartRate","ecgHeartRate","spo2","temperature"].map(key => {
                     const series = data[key];
                     if (!series) return null;
                     const s    = stats(series);

@@ -113,7 +113,7 @@ dual-protocol pipeline. For full setup, tuning, and parameter reference see
 
 **Quick summary:**
 - ECG/PPG → ESP32 samples at 100Hz, batches 50 samples, HTTPS POSTs to `/api/telemetry/ingest` every 500ms
-- Vitals → ESP32 publishes `{ heartRate, spo2, temperature }` via MQTT gateway every 15s
+- Vitals → ESP32 publishes `{ ecgHeartRate, ppgHeartRate, spo2, temperature }` via MQTT gateway every 15s
 - Ingest handler decodes each batch into per-sample time-series and writes to ThingsBoard admin API
 - Dashboard receives data via ThingsBoard WebSocket (`useTbWebSocket`) and REST poll (`/api/telemetry/latest`)
 
@@ -252,7 +252,8 @@ The app uses CSS custom properties that change based on `data-theme` attribute:
 ```javascript
 // Vital data
 {
-  heartRate: { value: 72, ts: 1234567890 },
+  ppgHeartRate: { value: 71, ts: 1234567890 },
+  ecgHeartRate: { value: 72, ts: 1234567890 },
   spo2: { value: 98, ts: 1234567890 },
   temperature: { value: 36.8, ts: 1234567890 }
 }
@@ -489,7 +490,8 @@ const VITALS = [
 Add key to `pages/api/telemetry/latest.js`:
 ```javascript
 const keys = [
-  "heartRate",
+  "ppgHeartRate",
+  "ecgHeartRate",
   "spo2",
   "temperature",
   "bloodPressure",  // Add here
@@ -586,7 +588,7 @@ const { id } = router.query;
 **API endpoint parameters:**
 ```javascript
 // In pages/api/telemetry/history.js
-const { key = "heartRate", hours = "1" } = req.query;
+const { key = "ppgHeartRate", hours = "1" } = req.query;
 ```
 
 ---
@@ -946,7 +948,8 @@ const VITALS = [
 
 // 2. Add to API keys (pages/api/telemetry/latest.js)
 const keys = [
-  "heartRate",
+  "ppgHeartRate",
+  "ecgHeartRate",
   "spo2",
   "temperature",
   "newVital",  // ← Add
@@ -1120,7 +1123,8 @@ Maintains a rolling buffer of the last 10 readings per vital and compares the cu
 import { useTrends } from "../hooks/useTrends";
 
 const trends = useTrends(vitals);
-// trends.heartRate → "up" | "down" | "stable"
+// trends.ppgHeartRate → "up" | "down" | "stable"
+// trends.ecgHeartRate → "up" | "down" | "stable"
 ```
 
 **Tuning constants (inside `hooks/useTrends.js`):**
@@ -1155,8 +1159,8 @@ Output is a pivoted CSV with one column per selected key, one row per unique tim
 # To:   2026-05-28T01:00:00.000Z
 # Generated: ...
 
-timestamp_ms,datetime,heartRate,spo2,temperature
-1716854400000,2026-05-28T00:00:00.000Z,72,98,36.6
+timestamp_ms,datetime,ppgHeartRate,ecgHeartRate,spo2,temperature
+1716854400000,2026-05-28T00:00:00.000Z,71,72,98,36.6
 ...
 ```
 
@@ -1177,7 +1181,7 @@ Rendered above the main dashboard. Shows one card per device with:
 ```javascript
 <OverviewGrid
   devices={devices}            // array of { id, name, displayName, online }
-  vitalsMap={vitalsMap}        // { [deviceId]: { heartRate: {value, ts}, ... } }
+  vitalsMap={vitalsMap}        // { [deviceId]: { ppgHeartRate: {value, ts}, ecgHeartRate: {value, ts}, ... } }
   onSelectDevice={fn}          // callback(deviceId)
   selectedDeviceId={string}    // currently selected device
 />

@@ -6,13 +6,15 @@
 //
 // POST /api/telemetry/ingest
 // Body: {
-//   deviceName:  "Node1",
-//   ts:          1234567890123,   // optional; server uses Date.now() if absent
-//   ecg_batch:   "[v0,v1,...,v49]",  // optional
-//   ppg_batch:   "[v0,v1,...,v49]",  // optional
-//   heartRate:   72.5,               // optional vitals
-//   spo2:        98.2,
-//   temperature: 36.6,
+//   deviceName:    "Node1",
+//   ts:            1234567890123,   // optional; server uses Date.now() if absent
+//   ecg_batch:     "[v0,v1,...,v49]",  // optional
+//   ppg_batch:     "[v0,v1,...,v49]",  // optional
+//   ecgHeartRate:  72.5,               // optional vitals (ECG-derived HR)
+//   ppgHeartRate:  71.0,               // optional vitals (PPG-derived HR)
+//   heartRate:     72.5,               // legacy alias → stored as ppgHeartRate
+//   spo2:          98.2,
+//   temperature:   36.6,
 // }
 // Returns: { ok: true, device: "Node1", points: 50 }
 
@@ -83,12 +85,19 @@ async function postTimeseries(deviceToken, telemetry) {
 export default async function handler(req, res) {
   if (req.method !== "POST") return res.status(405).end();
 
-  const { deviceName, ts, ecg_batch, ppg_batch, heartRate, spo2, temperature } = req.body ?? {};
+  const {
+    deviceName, ts, ecg_batch, ppg_batch,
+    ecgHeartRate, spo2, temperature,
+    ppgHeartRate: ppgHrDirect,
+    heartRate: heartRateLegacy,   // legacy key — stored as ppgHeartRate
+  } = req.body ?? {};
+
+  const ppgHeartRate = ppgHrDirect ?? heartRateLegacy; // prefer explicit key
 
   if (!deviceName) return res.status(400).json({ error: "deviceName required" });
 
   const hasWaveform = ecg_batch || ppg_batch;
-  const hasVitals   = heartRate != null || spo2 != null || temperature != null;
+  const hasVitals   = ecgHeartRate != null || ppgHeartRate != null || spo2 != null || temperature != null;
   if (!hasWaveform && !hasVitals) {
     return res.status(400).json({ error: "at least one of ecg_batch, ppg_batch, or vitals required" });
   }
@@ -119,9 +128,10 @@ export default async function handler(req, res) {
     // Vitals — single timestamped entry at batchTs
     if (hasVitals) {
       const values = {};
-      if (heartRate   != null) values.heartRate   = heartRate;
-      if (spo2        != null) values.spo2        = spo2;
-      if (temperature != null) values.temperature = temperature;
+      if (ecgHeartRate != null) values.ecgHeartRate = ecgHeartRate;
+      if (ppgHeartRate != null) values.ppgHeartRate = ppgHeartRate;
+      if (spo2         != null) values.spo2         = spo2;
+      if (temperature  != null) values.temperature  = temperature;
       telemetry.push({ ts: batchTs, values });
     }
 

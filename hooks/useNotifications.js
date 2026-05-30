@@ -4,11 +4,13 @@
 // a node crosses a critical threshold.
 
 import { useEffect, useRef, useCallback } from "react";
+import { DEFAULT_THRESHOLDS } from "../context/SettingsContext";
 
-const THRESHOLDS = {
-  heartRate:   { dangerMin:40,  dangerMax:130, label:"Heart Rate",   unit:"bpm" },
-  spo2:        { dangerMin:88,  dangerMax:100, label:"SpO₂",         unit:"%"   },
-  temperature: { dangerMin:35,  dangerMax:39.5,label:"Temperature",  unit:"°C"  },
+const FALLBACK_META = {
+  ppgHeartRate: { label: "PPG Heart Rate", unit: "bpm" },
+  ecgHeartRate: { label: "ECG Heart Rate", unit: "bpm" },
+  spo2:         { label: "SpO₂",           unit: "%"   },
+  temperature:  { label: "Temperature",    unit: "°C"  },
 };
 
 // Simple beep using Web Audio API — no file needed
@@ -27,11 +29,10 @@ function beep(frequency = 880, duration = 400, volume = 0.3) {
   } catch (_) {}
 }
 
-export function useNotifications(deviceName, vitals, enabled = true) {
-  const lastAlerted  = useRef({});   // { key: lastTs } — debounce per key
+export function useNotifications(deviceName, vitals, enabled = true, thresholds = DEFAULT_THRESHOLDS) {
+  const lastAlerted  = useRef({});
   const permissionRef = useRef(null);
 
-  // Request permission on mount
   useEffect(() => {
     if (!enabled || typeof window === "undefined") return;
     if ("Notification" in window && Notification.permission === "default") {
@@ -45,35 +46,34 @@ export function useNotifications(deviceName, vitals, enabled = true) {
     if (!enabled || !vitals || !deviceName) return;
     const now = Date.now();
 
-    for (const [key, t] of Object.entries(THRESHOLDS)) {
+    for (const key of Object.keys(FALLBACK_META)) {
+      const t   = thresholds[key] ?? DEFAULT_THRESHOLDS[key];
+      const meta = FALLBACK_META[key];
       const val = vitals[key]?.value;
       if (val == null) continue;
 
       const isDangerous = val < t.dangerMin || val > t.dangerMax;
       if (!isDangerous) { delete lastAlerted.current[key]; continue; }
 
-      // Debounce: only alert once per 30 seconds per key
       if (lastAlerted.current[key] && now - lastAlerted.current[key] < 30_000) continue;
       lastAlerted.current[key] = now;
 
       const direction = val < t.dangerMin ? "LOW" : "HIGH";
-      const message   = `${deviceName}: ${t.label} ${direction} — ${val.toFixed(1)} ${t.unit}`;
+      const message   = `${deviceName}: ${meta.label} ${direction} — ${val.toFixed(1)} ${meta.unit}`;
 
-      // Browser notification
       if ("Notification" in window && Notification.permission === "granted") {
         new Notification("⚠ VITALSYNC ALERT", {
           body: message,
           icon: "/favicon.ico",
-          tag:  `${deviceName}-${key}`,  // replace previous same-key notification
+          tag:  `${deviceName}-${key}`,
           requireInteraction: true,
         });
       }
 
-      // Audio beep — two short beeps for critical
       beep(880, 200, 0.4);
       setTimeout(() => beep(880, 200, 0.4), 300);
     }
-  }, [vitals, deviceName, enabled]);
+  }, [vitals, deviceName, enabled, thresholds]);
 
   useEffect(() => {
     checkAlerts();

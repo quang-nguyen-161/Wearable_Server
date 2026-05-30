@@ -7,20 +7,23 @@ import {
 } from "recharts";
 
 const COLOR_MAP = {
-  heartRate: "#5B9BD5", spo2: "#70AD47", temperature: "#FFC000",
+  ppgHeartRate: "#5B9BD5", ecgHeartRate: "#00c8ff",
+  spo2: "#70AD47", temperature: "#FFC000",
   systolic: "#E74C3C", diastolic: "#9B59B6", respiratoryRate: "#FF96B7",
   glucose: "#5B9BD5", steps: "#70AD47", ecg: "#FF96B7", ppg: "#70AD47",
 };
 
 const LABEL_MAP = {
-  heartRate: "Heart Rate (bpm)", spo2: "SpO₂ (%)", temperature: "Temperature (°C)",
+  ppgHeartRate: "PPG Heart Rate (bpm)", ecgHeartRate: "ECG Heart Rate (bpm)",
+  spo2: "SpO₂ (%)", temperature: "Temperature (°C)",
   systolic: "Systolic BP (mmHg)", diastolic: "Diastolic BP (mmHg)",
   respiratoryRate: "Resp. Rate (br/min)", glucose: "Glucose (mg/dL)",
   steps: "Steps", ecg: "ECG Signal (µV)", ppg: "PPG Signal (a.u.)",
 };
 
 const NORMAL_RANGES = {
-  heartRate: [60, 100], spo2: [95, 100], temperature: [36.1, 37.2],
+  ppgHeartRate: [60, 100], ecgHeartRate: [60, 100],
+  spo2: [95, 100], temperature: [36.1, 37.2],
   systolic: [90, 130], diastolic: [60, 85], respiratoryRate: [12, 20], glucose: [70, 140],
 };
 
@@ -84,7 +87,14 @@ export default function TrendChart({ series, metricKey, loading, hideControls = 
         </div>
       );
     }
-    const liveDisplay = series.slice(-1000); // ~10s at 100Hz — matches TB window
+    // Show last 5s; downsample to max 500 pts so SVG renders stay fast
+    const LIVE_WINDOW_MS = 5000;
+    const MAX_DISPLAY    = 500;
+    const latestTs   = series[series.length - 1].ts;
+    const windowed   = series.filter(d => d.ts >= latestTs - LIVE_WINDOW_MS);
+    const step       = Math.max(1, Math.floor(windowed.length / MAX_DISPLAY));
+    const liveDisplay = step > 1 ? windowed.filter((_, i) => i % step === 0) : windowed;
+
     const fmtTs = (ts) => new Date(ts).toLocaleTimeString("en-US", {
       hour: "2-digit", minute: "2-digit", second: "2-digit", hour12: false,
     });

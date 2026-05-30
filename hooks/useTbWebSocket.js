@@ -6,8 +6,8 @@ import { useEffect, useRef, useState, useCallback } from "react";
 import { parseWaveformBatch } from "../lib/thingsboard";
 
 const TB_WS_URL   = process.env.NEXT_PUBLIC_TB_WS_URL;
-const MAX_POINTS  = 500;   // rolling buffer size per signal (~5s at 100Hz)
-const FLUSH_MS    = 33;    // ~30fps render rate
+const MAX_POINTS  = 1500;  // rolling buffer size per signal (~6s at 250Hz)
+const FLUSH_MS    = 16;    // ~60fps render rate
 
 export function useTbWebSocket(deviceId, tbToken) {
   const wsRef       = useRef(null);
@@ -41,7 +41,7 @@ export function useTbWebSocket(deviceId, tbToken) {
 
       // ECG
       if (pendingEcg.current.length > 0) {
-        const pts = pendingEcg.current.splice(0);
+        const pts = pendingEcg.current.splice(0).sort((a, b) => a.ts - b.ts);
         setEcgData(prev => {
           const next = [...prev, ...pts];
           return next.length > MAX_POINTS ? next.slice(-MAX_POINTS) : next;
@@ -50,7 +50,7 @@ export function useTbWebSocket(deviceId, tbToken) {
 
       // PPG
       if (pendingPpg.current.length > 0) {
-        const pts = pendingPpg.current.splice(0);
+        const pts = pendingPpg.current.splice(0).sort((a, b) => a.ts - b.ts);
         setPpgData(prev => {
           const next = [...prev, ...pts];
           return next.length > MAX_POINTS ? next.slice(-MAX_POINTS) : next;
@@ -85,7 +85,7 @@ export function useTbWebSocket(deviceId, tbToken) {
       if (!data) return;
 
       // Vitals — keep latest value only
-      for (const key of ["heartRate", "spo2", "temperature"]) {
+      for (const key of ["ppgHeartRate", "ecgHeartRate", "spo2", "temperature"]) {
         const entries = data[key];
         if (entries?.length) {
           const [ts, val] = entries[entries.length - 1];
@@ -93,13 +93,12 @@ export function useTbWebSocket(deviceId, tbToken) {
         }
       }
 
-      // ECG / PPG — individual timestamped points (legacy or future direct-sample path)
-      for (const [ts, val] of (data["ecg"] || [])) {
-        pendingEcg.current.push({ ts, value: parseFloat(val) });
-      }
-      for (const [ts, val] of (data["ppg"] || [])) {
-        pendingPpg.current.push({ ts, value: parseFloat(val) });
-      }
+      // ECG / PPG — individual timestamped points posted directly from firmware
+      const ecgPts = data["ecg"] || [];
+      const ppgPts = data["ppg"] || [];
+      for (const [ts, val] of ecgPts) pendingEcg.current.push({ ts, value: parseFloat(val) });
+      for (const [ts, val] of ppgPts) pendingPpg.current.push({ ts, value: parseFloat(val) });
+      if (ecgPts.length > 0 || ppgPts.length > 0) lastBatchTsRef.current = Date.now();
 
       // ecg_batch / ppg_batch — JSON-string arrays from HTTPS POST
       // parseWaveformBatch reconstructs per-sample timestamps: last sample = batchTs, step 10ms back

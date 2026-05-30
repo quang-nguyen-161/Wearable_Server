@@ -29,22 +29,23 @@ sensor data from **ThingsBoard Cloud**. Designed for Vercel deployment.
 
 Your device should publish telemetry with these **exact keys**:
 
-| Key                | Description            | Example Value |
-|--------------------|------------------------|---------------|
-| `heartRate`        | Heart rate             | `72`          |
-| `spo2`             | Oxygen saturation (%)  | `98.5`        |
-| `temperature`      | Body temperature (°C)  | `36.6`        |
-| `systolic`         | Systolic BP (mmHg)     | `118`         |
-| `diastolic`        | Diastolic BP (mmHg)    | `76`          |
-| `respiratoryRate`  | Breaths per minute     | `16`          |
-| `glucose`          | Blood glucose (mg/dL)  | `95`          |
-| `steps`            | Daily step count       | `4320`        |
+| Key                | Description                          | Example Value |
+|--------------------|--------------------------------------|---------------|
+| `ecgHeartRate`     | Heart rate derived from ECG signal   | `72`          |
+| `ppgHeartRate`     | Heart rate derived from PPG signal   | `71`          |
+| `spo2`             | Oxygen saturation (%)                | `98.5`        |
+| `temperature`      | Body temperature (°C)                | `36.6`        |
+| `systolic`         | Systolic BP (mmHg)                   | `118`         |
+| `diastolic`        | Diastolic BP (mmHg)                  | `76`          |
+| `respiratoryRate`  | Breaths per minute                   | `16`          |
+| `glucose`          | Blood glucose (mg/dL)                | `95`          |
+| `steps`            | Daily step count                     | `4320`        |
 
 You can push test data via the ThingsBoard HTTP API:
 ```bash
 curl -X POST https://thingsboard.cloud/api/v1/YOUR_DEVICE_TOKEN/telemetry \
   -H "Content-Type: application/json" \
-  -d '{"heartRate":72,"spo2":98,"temperature":36.6,"systolic":118,"diastolic":76,"respiratoryRate":16,"glucose":95,"steps":4320}'
+  -d '{"ecgHeartRate":72,"ppgHeartRate":71,"spo2":98,"temperature":36.6}'
 ```
 
 Find `YOUR_DEVICE_TOKEN` under **Device** → **Manage credentials**.

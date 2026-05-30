@@ -108,16 +108,18 @@ Then replace `#00c8ff` with `var(--brand-primary)` in the files above.
 In `pages/index.js` — `VITALS` array:
 ```js
 const VITALS = [
-  { key: "heartRate", icon: "♥",  ... },  // ← change emoji
-  { key: "spo2",      icon: "💧", ... },
-  { key: "temperature", icon: "🌡", ... },
+  { key: "ppgHeartRate", icon: "❤️",  ... },  // ← change emoji
+  { key: "ecgHeartRate", icon: "💓",  ... },
+  { key: "spo2",         icon: "💧",  ... },
+  { key: "temperature",  icon: "🌡",  ... },
 ];
 ```
 
 Common alternatives:
 | Vital | Options |
 |---|---|
-| Heart Rate | `♥` `❤️` `🫀` |
+| PPG Heart Rate | `❤️` `♥` `🫀` |
+| ECG Heart Rate | `💓` `♥` `🫀` |
 | SpO₂ | `💧` `🩸` `O₂` |
 | Temperature | `🌡` `🌡️` `°C` |
 

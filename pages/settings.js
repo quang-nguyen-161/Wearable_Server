@@ -1,40 +1,50 @@
 // pages/settings.js
 // Per-node settings page.
-// - Vital thresholds → saved as SERVER_SCOPE attributes on the selected node device
-// - BLE interval    → saved as SHARED_SCOPE attribute (firmware subscribes to this)
+// - Vital thresholds    → saved as SERVER_SCOPE attributes on the selected node device
+// - vitalInterval       → saved as SHARED_SCOPE (firmware: how often vitals are reported)
+// - ecgSampleFreq       → saved as SHARED_SCOPE (firmware: ADC sampling rate in Hz)
+// - ecgPacketInterval   → saved as SHARED_SCOPE (firmware: ECG packet send interval in ms)
 
 import { useState, useEffect, useCallback } from "react";
 import { useRouter } from "next/router";
 import Head from "next/head";
 import Link from "next/link";
+import { useSettings } from "../context/SettingsContext";
 
 // ── Defaults ────────────────────────────────────────────────────────────────
 const DEFAULT_THRESHOLDS = {
-  heartRate:   { normalMin: 60,   normalMax: 100,  warnMin: 50,  warnMax: 120, dangerMin: 40,   dangerMax: 130  },
-  spo2:        { normalMin: 95,   normalMax: 100,  warnMin: 90,  warnMax: 100, dangerMin: 88,   dangerMax: 100  },
-  temperature: { normalMin: 36.1, normalMax: 37.2, warnMin: 35.5,warnMax: 38.5,dangerMin: 35.0, dangerMax: 39.5 },
+  ppgHeartRate: { normalMin: 60,   normalMax: 100,  warnMin: 50,  warnMax: 120, dangerMin: 40,   dangerMax: 130  },
+  ecgHeartRate: { normalMin: 60,   normalMax: 100,  warnMin: 50,  warnMax: 120, dangerMin: 40,   dangerMax: 130  },
+  spo2:         { normalMin: 95,   normalMax: 100,  warnMin: 90,  warnMax: 100, dangerMin: 88,   dangerMax: 100  },
+  temperature:  { normalMin: 36.1, normalMax: 37.2, warnMin: 35.5,warnMax: 38.5,dangerMin: 35.0, dangerMax: 39.5 },
 };
 
 const VITAL_LABELS = {
-  heartRate:   { label: "HEART RATE",  unit: "bpm" },
-  spo2:        { label: "SpO₂",        unit: "%"   },
-  temperature: { label: "TEMPERATURE", unit: "°C"  },
+  ppgHeartRate: { label: "PPG HEART RATE", unit: "bpm" },
+  ecgHeartRate: { label: "ECG HEART RATE", unit: "bpm" },
+  spo2:         { label: "SpO₂",           unit: "%"   },
+  temperature:  { label: "TEMPERATURE",    unit: "°C"  },
 };
 
-const DEFAULT_INTERVAL = 1000; // ms — BLE peripheral notify interval
+const DEFAULT_VITAL_INTERVAL    = 1000; // ms — how often vitals are reported
+const DEFAULT_ECG_SAMPLE_FREQ   = 250;  // Hz — ADC sampling rate
+const DEFAULT_ECG_PACKET_INTERVAL = 20; // ms — how often ECG packets are sent
 
 // ── Settings page ────────────────────────────────────────────────────────────
 export default function Settings() {
   const router = useRouter();
 
-  const [devices,          setDevices]          = useState([]);
-  const [selectedDeviceId, setSelectedDeviceId] = useState(null);
-  const [thresholds,       setThresholds]       = useState(DEFAULT_THRESHOLDS);
-  const [bleInterval,      setBleInterval]      = useState(DEFAULT_INTERVAL);
-  const [loading,          setLoading]          = useState(false);
-  const [saving,           setSaving]           = useState(false);
-  const [saveMsg,          setSaveMsg]          = useState(null); // { type: "ok"|"err", text }
-  const [theme,            setTheme]            = useState("light");
+  const [devices,            setDevices]            = useState([]);
+  const [selectedDeviceId,   setSelectedDeviceId]   = useState(null);
+  const { updateSettings }                          = useSettings(selectedDeviceId);
+  const [thresholds,         setThresholds]         = useState(DEFAULT_THRESHOLDS);
+  const [vitalInterval,      setVitalInterval]      = useState(DEFAULT_VITAL_INTERVAL);
+  const [ecgSampleFreq,      setEcgSampleFreq]      = useState(DEFAULT_ECG_SAMPLE_FREQ);
+  const [ecgPacketInterval,  setEcgPacketInterval]  = useState(DEFAULT_ECG_PACKET_INTERVAL);
+  const [loading,            setLoading]            = useState(false);
+  const [saving,             setSaving]             = useState(false);
+  const [saveMsg,            setSaveMsg]            = useState(null); // { type: "ok"|"err", text }
+  const [theme,              setTheme]              = useState("light");
 
   // ── Theme ──────────────────────────────────────────────────────────────
   useEffect(() => {
@@ -67,13 +77,21 @@ export default function Settings() {
       const a    = json.attributes || {};
 
       setThresholds({
-        heartRate: {
-          normalMin:  a.hr_normalMin   ?? DEFAULT_THRESHOLDS.heartRate.normalMin,
-          normalMax:  a.hr_normalMax   ?? DEFAULT_THRESHOLDS.heartRate.normalMax,
-          warnMin:    a.hr_warnMin     ?? DEFAULT_THRESHOLDS.heartRate.warnMin,
-          warnMax:    a.hr_warnMax     ?? DEFAULT_THRESHOLDS.heartRate.warnMax,
-          dangerMin:  a.hr_dangerMin   ?? DEFAULT_THRESHOLDS.heartRate.dangerMin,
-          dangerMax:  a.hr_dangerMax   ?? DEFAULT_THRESHOLDS.heartRate.dangerMax,
+        ppgHeartRate: {
+          normalMin:  a.ppgHr_normalMin ?? DEFAULT_THRESHOLDS.ppgHeartRate.normalMin,
+          normalMax:  a.ppgHr_normalMax ?? DEFAULT_THRESHOLDS.ppgHeartRate.normalMax,
+          warnMin:    a.ppgHr_warnMin   ?? DEFAULT_THRESHOLDS.ppgHeartRate.warnMin,
+          warnMax:    a.ppgHr_warnMax   ?? DEFAULT_THRESHOLDS.ppgHeartRate.warnMax,
+          dangerMin:  a.ppgHr_dangerMin ?? DEFAULT_THRESHOLDS.ppgHeartRate.dangerMin,
+          dangerMax:  a.ppgHr_dangerMax ?? DEFAULT_THRESHOLDS.ppgHeartRate.dangerMax,
+        },
+        ecgHeartRate: {
+          normalMin:  a.ecgHr_normalMin ?? DEFAULT_THRESHOLDS.ecgHeartRate.normalMin,
+          normalMax:  a.ecgHr_normalMax ?? DEFAULT_THRESHOLDS.ecgHeartRate.normalMax,
+          warnMin:    a.ecgHr_warnMin   ?? DEFAULT_THRESHOLDS.ecgHeartRate.warnMin,
+          warnMax:    a.ecgHr_warnMax   ?? DEFAULT_THRESHOLDS.ecgHeartRate.warnMax,
+          dangerMin:  a.ecgHr_dangerMin ?? DEFAULT_THRESHOLDS.ecgHeartRate.dangerMin,
+          dangerMax:  a.ecgHr_dangerMax ?? DEFAULT_THRESHOLDS.ecgHeartRate.dangerMax,
         },
         spo2: {
           normalMin:  a.spo2_normalMin  ?? DEFAULT_THRESHOLDS.spo2.normalMin,
@@ -92,7 +110,9 @@ export default function Settings() {
           dangerMax:  a.temp_dangerMax  ?? DEFAULT_THRESHOLDS.temperature.dangerMax,
         },
       });
-      setBleInterval(a.bleInterval ?? DEFAULT_INTERVAL);
+      setVitalInterval(a.vitalInterval ?? DEFAULT_VITAL_INTERVAL);
+      setEcgSampleFreq(a.ecgSampleFreq ?? DEFAULT_ECG_SAMPLE_FREQ);
+      setEcgPacketInterval(a.ecgPacketInterval ?? DEFAULT_ECG_PACKET_INTERVAL);
     } catch (e) {
       console.error("Load attributes:", e);
     } finally {
@@ -112,12 +132,18 @@ export default function Settings() {
 
     // Flatten thresholds into TB attribute keys
     const serverAttrs = {
-      hr_normalMin:    thresholds.heartRate.normalMin,
-      hr_normalMax:    thresholds.heartRate.normalMax,
-      hr_warnMin:      thresholds.heartRate.warnMin,
-      hr_warnMax:      thresholds.heartRate.warnMax,
-      hr_dangerMin:    thresholds.heartRate.dangerMin,
-      hr_dangerMax:    thresholds.heartRate.dangerMax,
+      ppgHr_normalMin: thresholds.ppgHeartRate.normalMin,
+      ppgHr_normalMax: thresholds.ppgHeartRate.normalMax,
+      ppgHr_warnMin:   thresholds.ppgHeartRate.warnMin,
+      ppgHr_warnMax:   thresholds.ppgHeartRate.warnMax,
+      ppgHr_dangerMin: thresholds.ppgHeartRate.dangerMin,
+      ppgHr_dangerMax: thresholds.ppgHeartRate.dangerMax,
+      ecgHr_normalMin: thresholds.ecgHeartRate.normalMin,
+      ecgHr_normalMax: thresholds.ecgHeartRate.normalMax,
+      ecgHr_warnMin:   thresholds.ecgHeartRate.warnMin,
+      ecgHr_warnMax:   thresholds.ecgHeartRate.warnMax,
+      ecgHr_dangerMin: thresholds.ecgHeartRate.dangerMin,
+      ecgHr_dangerMax: thresholds.ecgHeartRate.dangerMax,
       spo2_normalMin:  thresholds.spo2.normalMin,
       spo2_normalMax:  thresholds.spo2.normalMax,
       spo2_warnMin:    thresholds.spo2.warnMin,
@@ -144,18 +170,22 @@ export default function Settings() {
         }),
       });
 
-      // 2. Save BLE interval as SHARED_SCOPE (firmware subscribes to this)
+      // 2. Save firmware-read settings as SHARED_SCOPE
       const r2 = await fetch("/api/attributes/save", {
         method:  "POST",
         headers: { "Content-Type": "application/json" },
         body:    JSON.stringify({
           deviceId:   selectedDeviceId,
           scope:      "SHARED_SCOPE",
-          attributes: { bleInterval },
+          attributes: { vitalInterval, ecgSampleFreq, ecgPacketInterval },
         }),
       });
 
       if (!r1.ok || !r2.ok) throw new Error("Save failed");
+
+      // Push into global context so dashboard reflects new values immediately
+      updateSettings({ vitalInterval, ecgSampleFreq, ecgPacketInterval, thresholds });
+
       setSaveMsg({ type: "ok", text: "Settings saved to ThingsBoard ✓" });
     } catch (e) {
       setSaveMsg({ type: "err", text: `Error: ${e.message}` });
@@ -168,7 +198,9 @@ export default function Settings() {
   // ── Reset defaults ─────────────────────────────────────────────────────
   const handleReset = () => {
     setThresholds(DEFAULT_THRESHOLDS);
-    setBleInterval(DEFAULT_INTERVAL);
+    setVitalInterval(DEFAULT_VITAL_INTERVAL);
+    setEcgSampleFreq(DEFAULT_ECG_SAMPLE_FREQ);
+    setEcgPacketInterval(DEFAULT_ECG_PACKET_INTERVAL);
   };
 
   // ── Threshold field helper ─────────────────────────────────────────────
@@ -297,35 +329,94 @@ export default function Settings() {
             })}
           </section>
 
-          {/* ── BLE interval ── */}
+          {/* ── Vital interval ── */}
           <section className="settings-section">
-            <div className="section-title">BLE NOTIFY INTERVAL</div>
+            <div className="section-title">VITAL INTERVAL</div>
             <div className="section-sub">
-              Saved as a Shared attribute on this node. The node firmware reads this value and sets how frequently the BLE peripheral sends notifications to the gateway. Lower = more frequent data updates.
+              Saved as a Shared attribute. Controls how frequently the node reports vital signs (HR, SpO₂, temperature) to the gateway. Lower = more frequent updates, higher power consumption.
             </div>
             <div className="interval-row">
               <input
                 type="range"
                 min={100} max={5000} step={100}
-                value={bleInterval}
-                onChange={e => setBleInterval(Number(e.target.value))}
+                value={vitalInterval}
+                onChange={e => setVitalInterval(Number(e.target.value))}
                 className="interval-slider"
               />
-              <span className="interval-value">{bleInterval} ms</span>
+              <span className="interval-value">{vitalInterval} ms</span>
             </div>
             <div className="interval-presets">
               {[100, 250, 500, 1000, 2000, 5000].map(ms => (
                 <button
                   key={ms}
-                  className={`preset-btn ${bleInterval === ms ? "preset-btn--active" : ""}`}
-                  onClick={() => setBleInterval(ms)}
+                  className={`preset-btn ${vitalInterval === ms ? "preset-btn--active" : ""}`}
+                  onClick={() => setVitalInterval(ms)}
                 >
                   {ms < 1000 ? `${ms}ms` : `${ms/1000}s`}
                 </button>
               ))}
             </div>
-            <div className="interval-hint">
-              ↓ Lower interval = more frequent BLE notifications = smoother live data, higher power consumption on the peripheral node.
+          </section>
+
+          {/* ── ECG settings ── */}
+          <section className="settings-section">
+            <div className="section-title">ECG SETTINGS</div>
+            <div className="section-sub">
+              Saved as Shared attributes. The firmware reads these values to configure ECG acquisition and streaming behaviour.
+            </div>
+
+            {/* ECG sample frequency */}
+            <div className="ecg-field-group">
+              <div className="ecg-field-label">
+                SAMPLE FREQUENCY
+                <span className="ecg-field-unit">Hz</span>
+              </div>
+              <div className="ecg-field-sub">ADC sampling rate for the ECG signal. Higher rate captures more detail but increases data volume.</div>
+              <div className="interval-presets">
+                {[125, 250, 500, 1000].map(hz => (
+                  <button
+                    key={hz}
+                    className={`preset-btn ${ecgSampleFreq === hz ? "preset-btn--active" : ""}`}
+                    onClick={() => setEcgSampleFreq(hz)}
+                  >
+                    {hz} Hz
+                  </button>
+                ))}
+              </div>
+              <div className="ecg-value-display">{ecgSampleFreq} Hz</div>
+            </div>
+
+            {/* ECG packet send interval */}
+            <div className="ecg-field-group">
+              <div className="ecg-field-label">
+                PACKET SEND INTERVAL
+                <span className="ecg-field-unit">ms</span>
+              </div>
+              <div className="ecg-field-sub">How often accumulated ECG samples are sent as a packet. Lower = lower latency, more packets per second.</div>
+              <div className="interval-row">
+                <input
+                  type="range"
+                  min={10} max={500} step={10}
+                  value={ecgPacketInterval}
+                  onChange={e => setEcgPacketInterval(Number(e.target.value))}
+                  className="interval-slider"
+                />
+                <span className="interval-value">{ecgPacketInterval} ms</span>
+              </div>
+              <div className="interval-presets">
+                {[10, 20, 50, 100, 200, 500].map(ms => (
+                  <button
+                    key={ms}
+                    className={`preset-btn ${ecgPacketInterval === ms ? "preset-btn--active" : ""}`}
+                    onClick={() => setEcgPacketInterval(ms)}
+                  >
+                    {ms}ms
+                  </button>
+                ))}
+              </div>
+              <div className="interval-hint">
+                Samples per packet = {ecgSampleFreq} Hz × {ecgPacketInterval} ms / 1000 = <strong>{Math.round(ecgSampleFreq * ecgPacketInterval / 1000)} samples</strong>
+              </div>
             </div>
           </section>
 
@@ -585,6 +676,43 @@ export default function Settings() {
           line-height: 1.5;
         }
 
+        /* ECG settings */
+        .ecg-field-group {
+          border: 1px solid var(--border, #e2e8f0);
+          border-radius: 10px;
+          padding: 14px 16px;
+          margin-bottom: 12px;
+        }
+        .ecg-field-group:last-child { margin-bottom: 0; }
+        .ecg-field-label {
+          font-size: 11px;
+          font-weight: 700;
+          letter-spacing: 0.08em;
+          color: var(--text-primary, #2c3e50);
+          margin-bottom: 4px;
+          display: flex;
+          align-items: baseline;
+          gap: 6px;
+        }
+        .ecg-field-unit {
+          font-size: 10px;
+          font-weight: 400;
+          color: var(--text-muted, #94a3b8);
+          letter-spacing: 0;
+        }
+        .ecg-field-sub {
+          font-size: 11px;
+          color: var(--text-muted, #94a3b8);
+          margin-bottom: 10px;
+          line-height: 1.4;
+        }
+        .ecg-value-display {
+          font-size: 18px;
+          font-weight: 700;
+          color: #00c8ff;
+          margin-top: 8px;
+        }
+
         /* Actions */
         .settings-actions {
           display: flex;
@@ -661,6 +789,9 @@ export default function Settings() {
           background: #0f172a;
           border-color: #334155;
           color: #64748b;
+        }
+        :global([data-theme="dark"]) .ecg-field-group {
+          border-color: #334155;
         }
       `}</style>
     </>

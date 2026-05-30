@@ -13,9 +13,10 @@ const TIME_RANGES = [
 ];
 
 const VITALS_CONFIG = [
-  { key: "heartRate",   label: "HEART RATE", unit: "bpm", color: "#00c8ff", min: 60,   max: 100,  warnMin: 50,  warnMax: 120, dangerMin: 40,  dangerMax: 130  },
-  { key: "spo2",        label: "SPO₂",       unit: "%",   color: "#22c55e", min: 95,   max: 100,  warnMin: 90,  warnMax: 100, dangerMin: 88,  dangerMax: 100  },
-  { key: "temperature", label: "TEMP",       unit: "°C",  color: "#f59e0b", min: 36.1, max: 37.2, warnMin: 35.5,warnMax: 38.5,dangerMin: 35.0,dangerMax: 39.5 },
+  { key: "ppgHeartRate", label: "PPG HEART RATE", unit: "bpm", color: "#5B9BD5", min: 60,   max: 100,  warnMin: 50,  warnMax: 120, dangerMin: 40,  dangerMax: 130  },
+  { key: "ecgHeartRate", label: "ECG HEART RATE", unit: "bpm", color: "#00c8ff", min: 60,   max: 100,  warnMin: 50,  warnMax: 120, dangerMin: 40,  dangerMax: 130  },
+  { key: "spo2",         label: "SPO₂",           unit: "%",   color: "#22c55e", min: 95,   max: 100,  warnMin: 90,  warnMax: 100, dangerMin: 88,  dangerMax: 100  },
+  { key: "temperature",  label: "TEMP",           unit: "°C",  color: "#f59e0b", min: 36.1, max: 37.2, warnMin: 35.5,warnMax: 38.5,dangerMin: 35.0,dangerMax: 39.5 },
 ];
 
 function getStatus(key, value) {
@@ -114,7 +115,7 @@ export default function NodeDetailModal({ device, vitals, onClose }) {
               <div className="modal-vital-card" key={v.key}>
                 <div className="modal-vital-label">{v.label}</div>
                 <div className="modal-vital-value" style={{ color: v.color }}>
-                  {val != null ? val.toFixed(v.key === "heartRate" ? 0 : 1) : "—"}
+                  {val != null ? val.toFixed(v.key === "ppgHeartRate" || v.key === "ecgHeartRate" ? 0 : 1) : "—"}
                   <span className="modal-vital-unit">{v.unit}</span>
                 </div>
                 <div className="modal-vital-status" style={{ color: getStatusColor(status) }}>

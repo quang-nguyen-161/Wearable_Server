@@ -1,200 +1,167 @@
 // ── HealthMonitor ESP32 Firmware ─────────────────────────────────────────────
-// Dual-protocol streaming (mirrors scripts/test-http-stream.js):
-//   ECG/PPG raw waveforms → HTTPS POST /api/telemetry/ingest (100Hz, 50-sample batches)
-//   HR / SpO2 / Temperature → MQTT gateway API (every 15s)
+// Event-driven: esp_timer samples ADC at 250Hz into a working buffer.
+// When a batch is complete it swaps to a ready buffer and sets batchReady.
+// loop() posts the batch directly to ThingsBoard's gateway HTTP API —
+// each of the 250 samples gets its own timestamp (4ms apart).
+// No FreeRTOS tasks or semaphores — the timer drives everything.
 // ─────────────────────────────────────────────────────────────────────────────
 
 #include <Arduino.h>
 #include <WiFi.h>
 #include <WiFiClientSecure.h>
 #include <HTTPClient.h>
-#include <PubSubClient.h>
-#include <ArduinoJson.h>
+#include <esp_timer.h>
 #include <time.h>
 
-// ── Configuration — fill in before flashing ───────────────────────────────────
+// ── Configuration ─────────────────────────────────────────────────────────────
 
-const char* WIFI_SSID     = "YOUR_SSID";
-const char* WIFI_PASSWORD = "YOUR_PASSWORD";
+const char* WIFI_SSID   = "Xuaaan";
+const char* WIFI_PASSWORD = "88888888";
 
-// HTTPS ingest endpoint — your deployed Next.js app
-const char* INGEST_URL    = "https://your-app.vercel.app/api/telemetry/ingest";
+const char* TB_HOST       = "c7.hust-2slab.org";
+const char* DEVICE_TOKEN  = "YOUR_NODE1_ACCESS_TOKEN";  // Devices → Node1 → Manage credentials
+const bool  USE_HTTPS     = true;
 
-// ThingsBoard MQTT gateway
-const char* MQTT_HOST      = "mqtt.thingsboard.cloud";
-const int   MQTT_PORT      = 1883;
-const char* GATEWAY_TOKEN  = "YOUR_GATEWAY_ACCESS_TOKEN";  // wearable gateway device token
-const char* GATEWAY_TOPIC  = "v1/gateway/telemetry";
+const char* NODE_NAME   = "Node1";
 
-// Node identity — must match the device name in ThingsBoard
-const char* NODE_NAME = "Node1";
-
-// Sampling — 100Hz, 50 samples = 500ms of data per batch
-#define SAMPLE_RATE_HZ      100
-#define SAMPLE_INTERVAL_US  (1000000 / SAMPLE_RATE_HZ)  // 10000 µs = 10ms per sample
-#define BATCH_SIZE          50
+#define SAMPLE_RATE_HZ      250
+#define SAMPLE_INTERVAL_US  (1000000 / SAMPLE_RATE_HZ)  // 4000 µs
+#define SAMPLE_INTERVAL_MS  (1000 / SAMPLE_RATE_HZ)     // 4 ms
+#define BATCH_SIZE          250
 #define VITAL_INTERVAL_MS   15000
 
-// ADC pins
 #define ECG_PIN  34
 #define PPG_PIN  35
 
-// ── Global state ──────────────────────────────────────────────────────────────
+// 250 samples × ~55 chars each + wrapper ≈ 14 KB; 20 KB gives safe headroom
+#define PAYLOAD_BUF_SIZE  20480
 
-WiFiClient   mqttWifi;
-PubSubClient mqtt(mqttWifi);
+// ── Buffers ───────────────────────────────────────────────────────────────────
+// onSampleTimer fills ecgWork/ppgWork. When BATCH_SIZE samples are collected
+// and batchReady is false, it copies to ecgReady/ppgReady and sets batchReady.
+// loop() reads ecgReady/ppgReady only while batchReady is true, so the timer
+// never touches those buffers during a POST.
 
-// Double-buffered: loop() fills ecgBuf/ppgBuf while httpsTask() sends ecgSend/ppgSend
-int16_t ecgBuf[BATCH_SIZE];
-int16_t ppgBuf[BATCH_SIZE];
-int16_t ecgSend[BATCH_SIZE];
-int16_t ppgSend[BATCH_SIZE];
-unsigned long batchTsSend = 0;  // epoch ms snapshot at copy time
+static int16_t ecgWork[BATCH_SIZE], ppgWork[BATCH_SIZE];
+static int16_t ecgReady[BATCH_SIZE], ppgReady[BATCH_SIZE];
+static volatile unsigned long long readyTs = 0;
+static volatile bool batchReady = false;
+static int workIdx = 0;
 
-volatile int  bufIdx       = 0;
-unsigned long lastVitalMs  = 0;
-unsigned long lastSampleUs = 0;
-
-SemaphoreHandle_t sendSem;  // signals httpsTask that a batch is ready
+static unsigned long lastVitalMs = 0;
+static char payload[PAYLOAD_BUF_SIZE];
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
-// Returns epoch milliseconds if NTP synced, otherwise 0 (server will use Date.now())
-unsigned long long epochMs() {
+static unsigned long long epochMs() {
   struct timeval tv;
   gettimeofday(&tv, NULL);
-  if (tv.tv_sec < 1000000000L) return 0;  // NTP not yet synced
+  if (tv.tv_sec < 1000000000L) return 0;
   return (unsigned long long)tv.tv_sec * 1000ULL + tv.tv_usec / 1000ULL;
+}
+
+// ── 250Hz sample timer ────────────────────────────────────────────────────────
+
+static void onSampleTimer(void*) {
+  ecgWork[workIdx] = (int16_t)analogRead(ECG_PIN);
+  ppgWork[workIdx] = (int16_t)analogRead(PPG_PIN);
+  if (++workIdx < BATCH_SIZE) return;
+  workIdx = 0;
+
+  if (batchReady) return;  // loop() still posting — drop this batch
+  memcpy(ecgReady, ecgWork, BATCH_SIZE * sizeof(int16_t));
+  memcpy(ppgReady, ppgWork, BATCH_SIZE * sizeof(int16_t));
+  readyTs    = epochMs();
+  batchReady = true;
 }
 
 // ── WiFi + NTP ────────────────────────────────────────────────────────────────
 
-void setupWiFi() {
+static void setupWiFi() {
   WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
-  Serial.print("Connecting WiFi");
-  while (WiFi.status() != WL_CONNECTED) {
-    delay(500);
-    Serial.print(".");
-  }
-  Serial.printf("\nWiFi OK — IP: %s\n", WiFi.localIP().toString().c_str());
+  Serial.print("WiFi connecting");
+  while (WiFi.status() != WL_CONNECTED) { delay(500); Serial.print("."); }
+  Serial.printf("\nWiFi OK — %s\n", WiFi.localIP().toString().c_str());
 
   configTime(0, 0, "pool.ntp.org", "time.nist.gov");
   Serial.print("NTP sync");
   for (int i = 0; i < 20; i++) {
     if (epochMs() > 0) { Serial.println(" OK"); return; }
-    delay(500);
-    Serial.print(".");
+    delay(500); Serial.print(".");
   }
-  Serial.println(" (no sync — server will timestamp batches)");
+  Serial.println(" (skipped — server will use receive time)");
 }
 
-// ── MQTT gateway ──────────────────────────────────────────────────────────────
+// ── POST directly to Node1's own telemetry endpoint ──────────────────────────
+// Same approach as Next.js ingest.js: use the device's own access token.
+// URL: POST /api/v1/{DEVICE_TOKEN}/telemetry
 
-void connectMQTT() {
-  mqtt.setServer(MQTT_HOST, MQTT_PORT);
-  String clientId = "esp32-" + String((uint32_t)ESP.getEfuseMac(), HEX);
-  int retries = 0;
-  while (!mqtt.connected() && retries < 5) {
-    Serial.print("MQTT connecting...");
-    if (mqtt.connect(clientId.c_str(), GATEWAY_TOKEN, "")) {
-      Serial.println(" connected");
-    } else {
-      Serial.printf(" failed (rc=%d), retry in 2s\n", mqtt.state());
-      delay(2000);
-      retries++;
-    }
-  }
-}
-
-// ── HTTPS batch sender (runs on FreeRTOS task — blocking is fine here) ────────
-
-void sendRawBatch() {
-  // Ingest API expects ecg_batch / ppg_batch as JSON-stringified arrays
-  StaticJsonDocument<400> ecgDoc;
-  JsonArray ecgArr = ecgDoc.to<JsonArray>();
-  StaticJsonDocument<400> ppgDoc;
-  JsonArray ppgArr = ppgDoc.to<JsonArray>();
-  for (int i = 0; i < BATCH_SIZE; i++) {
-    ecgArr.add(ecgSend[i]);
-    ppgArr.add(ppgSend[i]);
-  }
-  char ecgStr[300], ppgStr[300];
-  serializeJson(ecgDoc, ecgStr, sizeof(ecgStr));
-  serializeJson(ppgDoc, ppgStr, sizeof(ppgStr));
-
-  StaticJsonDocument<800> body;
-  body["deviceName"] = NODE_NAME;
-  if (batchTsSend > 0) body["ts"] = batchTsSend;  // omit if NTP not synced
-  body["ecg_batch"]  = ecgStr;
-  body["ppg_batch"]  = ppgStr;
-  char payload[800];
-  serializeJson(body, payload, sizeof(payload));
-
-  WiFiClientSecure httpsTls;
-  httpsTls.setInsecure();
+static void postToTB(int len) {
+  WiFiClientSecure client;
+  client.setInsecure();
   HTTPClient http;
-  http.begin(httpsTls, INGEST_URL);
+  String url = String(USE_HTTPS ? "https" : "http")
+             + "://" + TB_HOST + "/api/v1/" + DEVICE_TOKEN + "/telemetry";
+  http.begin(client, url);
   http.addHeader("Content-Type", "application/json");
-
-  int code = http.POST(payload);
+  int code = http.POST((uint8_t*)payload, len);
   if (code > 0) {
-    Serial.printf("[%s] HTTPS %d\n", NODE_NAME, code);
+    if (code >= 300) Serial.printf("[TB] %d: %s\n", code, http.getString().c_str());
   } else {
-    Serial.printf("[%s] HTTPS failed: %s\n", NODE_NAME, http.errorToString(code).c_str());
+    Serial.printf("[TB] error: %s\n", http.errorToString(code).c_str());
   }
   http.end();
 }
 
-void httpsTask(void* pvParams) {
-  for (;;) {
-    if (xSemaphoreTake(sendSem, portMAX_DELAY) == pdTRUE) {
-      sendRawBatch();
-    }
+// ── Publish waveform batch ────────────────────────────────────────────────────
+// Sends 250 per-sample entries; sample[i].ts = batchTs - (249-i)*4ms
+
+static void publishWaveform() {
+  unsigned long long batchTs = readyTs > 0 ? readyTs : epochMs();
+  int pos = 0;
+
+  pos += snprintf(payload + pos, PAYLOAD_BUF_SIZE - pos, "[");
+
+  for (int i = 0; i < BATCH_SIZE; i++) {
+    unsigned long long sampleTs =
+      batchTs - (unsigned long long)(BATCH_SIZE - 1 - i) * SAMPLE_INTERVAL_MS;
+    pos += snprintf(payload + pos, PAYLOAD_BUF_SIZE - pos,
+      "%s{\"ts\":%llu,\"values\":{\"ecg\":%d,\"ppg\":%d}}",
+      i > 0 ? "," : "", sampleTs, ecgReady[i], ppgReady[i]);
   }
+
+  pos += snprintf(payload + pos, PAYLOAD_BUF_SIZE - pos, "]");
+  postToTB(pos);
+  Serial.printf("[%s] wave %d bytes\n", NODE_NAME, pos);
 }
 
-// ── MQTT vital sender — TB gateway format ─────────────────────────────────────
+// ── Publish vitals ────────────────────────────────────────────────────────────
 
-void sendVitals(float hr, float spo2, float temp) {
-  if (!mqtt.connected()) connectMQTT();
-
-  // TB gateway telemetry format: { "NodeName": [{ ts, values: { ... } }] }
-  StaticJsonDocument<300> doc;
-  JsonArray  nodeArr = doc.createNestedArray(NODE_NAME);
-  JsonObject entry   = nodeArr.createNestedObject();
+static void publishVitals(float ecgHr, float ppgHr, float spo2, float temp) {
   unsigned long long ts = epochMs();
-  if (ts > 0) entry["ts"] = ts;
-  JsonObject values  = entry.createNestedObject("values");
-  values["heartRate"]   = round(hr   * 10.0) / 10.0;
-  values["spo2"]        = round(spo2 * 10.0) / 10.0;
-  values["temperature"] = round(temp * 10.0) / 10.0;
-
-  char payload[300];
-  serializeJson(doc, payload, sizeof(payload));
-
-  bool ok = mqtt.publish(GATEWAY_TOPIC, payload);
-  Serial.printf("[%s] Vitals %s → HR:%.1f SpO2:%.1f Temp:%.1f\n",
-                NODE_NAME, ok ? "sent" : "FAILED", hr, spo2, temp);
+  int pos;
+  if (ts > 0) {
+    pos = snprintf(payload, PAYLOAD_BUF_SIZE,
+      "[{\"ts\":%llu,\"values\":"
+      "{\"ecgHeartRate\":%.1f,\"ppgHeartRate\":%.1f,\"spo2\":%.1f,\"temperature\":%.1f}}]",
+      ts, ecgHr, ppgHr, spo2, temp);
+  } else {
+    pos = snprintf(payload, PAYLOAD_BUF_SIZE,
+      "[{\"values\":"
+      "{\"ecgHeartRate\":%.1f,\"ppgHeartRate\":%.1f,\"spo2\":%.1f,\"temperature\":%.1f}}]",
+      ecgHr, ppgHr, spo2, temp);
+  }
+  postToTB(pos);
+  Serial.printf("[%s] vitals ECG-HR:%.1f PPG-HR:%.1f SpO2:%.1f Temp:%.1f\n",
+                NODE_NAME, ecgHr, ppgHr, spo2, temp);
 }
 
-// ── Signal processing — replace with your real algorithms ────────────────────
+// ── Signal processing — replace with real algorithms ─────────────────────────
 
-float computeHR(int16_t* ecgData, int n) {
-  // TODO: implement Pan-Tompkins QRS detection or equivalent
-  (void)ecgData; (void)n;
-  return 72.0;
-}
-
-float computeSpO2(int16_t* ppgData, int n) {
-  // TODO: implement R-ratio AC/DC calculation from red + IR channels
-  (void)ppgData; (void)n;
-  return 98.5;
-}
-
-float readTemperature() {
-  // TODO: read from your temperature sensor (DS18B20, LM35, MAX30205, etc.)
-  return 36.6;
-}
+static float computeEcgHR(int16_t* buf, int n)  { (void)buf; (void)n; return 72.0f; }
+static float computePpgHR(int16_t* buf, int n)  { (void)buf; (void)n; return 71.0f; }
+static float computeSpO2(int16_t* buf, int n)   { (void)buf; (void)n; return 98.5f; }
+static float readTemperature()                   { return 36.6f; }
 
 // ── setup / loop ──────────────────────────────────────────────────────────────
 
@@ -202,47 +169,32 @@ void setup() {
   Serial.begin(115200);
   setupWiFi();
 
-  sendSem = xSemaphoreCreateBinary();
-  // Stack 8192 bytes — HTTPS + TLS + ArduinoJson need the headroom
-  xTaskCreate(httpsTask, "https_send", 8192, NULL, 1, NULL);
+  esp_timer_create_args_t args = {};
+  args.callback = onSampleTimer;
+  args.name     = "sample";
+  esp_timer_handle_t timer;
+  esp_timer_create(&args, &timer);
+  esp_timer_start_periodic(timer, SAMPLE_INTERVAL_US);
 
-  connectMQTT();
-  Serial.printf("Ready — [%s] ECG/PPG via HTTPS + vitals via MQTT gateway\n", NODE_NAME);
+  Serial.printf("Ready — [%s] 250Hz → TB gateway\n", NODE_NAME);
 }
 
 void loop() {
-  unsigned long nowUs = micros();
-
-  // ── Precise 100Hz sampling using micros() ───────────────────────────────
-  // Never use delay() here — it blocks mqtt.loop()
-  if (nowUs - lastSampleUs >= SAMPLE_INTERVAL_US) {
-    lastSampleUs = nowUs;
-    if (bufIdx < BATCH_SIZE) {
-      ecgBuf[bufIdx] = (int16_t)analogRead(ECG_PIN);
-      ppgBuf[bufIdx] = (int16_t)analogRead(PPG_PIN);
-      bufIdx++;
-    }
+  // ── Waveform batch ready ────────────────────────────────────────────────────
+  if (batchReady) {
+    publishWaveform();
+    batchReady = false;
   }
 
-  // ── Copy full batch to send buffer and signal HTTPS task ────────────────
-  if (bufIdx >= BATCH_SIZE) {
-    memcpy(ecgSend, ecgBuf, sizeof(ecgBuf));
-    memcpy(ppgSend, ppgBuf, sizeof(ppgBuf));
-    batchTsSend = epochMs();
-    bufIdx = 0;
-    xSemaphoreGive(sendSem);
-  }
-
-  // ── Send vitals via MQTT gateway every 15 seconds ───────────────────────
+  // ── Vitals every 15s ────────────────────────────────────────────────────────
   unsigned long nowMs = millis();
   if (nowMs - lastVitalMs >= VITAL_INTERVAL_MS) {
-    sendVitals(
-      computeHR(ecgBuf, BATCH_SIZE),
-      computeSpO2(ppgBuf, BATCH_SIZE),
+    lastVitalMs = nowMs;
+    publishVitals(
+      computeEcgHR(ecgReady, BATCH_SIZE),
+      computePpgHR(ppgReady, BATCH_SIZE),
+      computeSpO2(ppgReady, BATCH_SIZE),
       readTemperature()
     );
-    lastVitalMs = nowMs;
   }
-
-  mqtt.loop();  // MQTT keepalive — never skip
 }

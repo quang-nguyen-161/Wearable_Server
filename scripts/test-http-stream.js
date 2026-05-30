@@ -9,7 +9,7 @@
  *           Server decodes batch → posts {ts, values:{ecg,ppg}} per sample to TB
  *           Each sample timestamp = batchTs - (n-1-i)*4ms  (250Hz / 4ms apart)
  *
- *   MQTT  → heartRate / spo2 / temperature  (gateway API, every 15s)
+ *   MQTT  → ecgHeartRate / ppgHeartRate / spo2 / temperature  (gateway API, every 15s)
  *
  * Requires the Next.js dev server to be running: npm run dev
  *
@@ -106,13 +106,16 @@ function publishVitals() {
     node.hrBase   = Math.max(50,   Math.min(110,  node.hrBase   + (Math.random() - 0.5) * 2));
     node.spo2Base = Math.max(93,   Math.min(100,  node.spo2Base + (Math.random() - 0.5) * 0.3));
     node.tempBase = Math.max(36.0, Math.min(37.8, node.tempBase + (Math.random() - 0.5) * 0.1));
+    const ecgHr = +node.hrBase.toFixed(1);
+    const ppgHr = +(node.hrBase - 1 + (Math.random() - 0.5)).toFixed(1);
     postIngest({
-      deviceName:  node.name,
-      heartRate:   +node.hrBase.toFixed(1),
-      spo2:        +node.spo2Base.toFixed(1),
-      temperature: +node.tempBase.toFixed(1),
+      deviceName:   node.name,
+      ecgHeartRate: ecgHr,
+      ppgHeartRate: ppgHr,
+      spo2:         +node.spo2Base.toFixed(1),
+      temperature:  +node.tempBase.toFixed(1),
     });
-    console.log(`[Vitals] ${t}  ${node.name}  HR:${String(+node.hrBase.toFixed(1)).padStart(5)}  SpO2:${+node.spo2Base.toFixed(1)}  Temp:${+node.tempBase.toFixed(1)}`);
+    console.log(`[Vitals] ${t}  ${node.name}  ECG-HR:${String(ecgHr).padStart(5)}  PPG-HR:${String(ppgHr).padStart(5)}  SpO2:${+node.spo2Base.toFixed(1)}  Temp:${+node.tempBase.toFixed(1)}`);
   }
 }
 
