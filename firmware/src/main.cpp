@@ -314,29 +314,38 @@ static int tbPost(const String& path, const String& body, String& out) {
 
 // ── Resolve one node's device token via admin API ─────────────────────────────
 
-static bool resolveNodeToken(const String& name, char* outTok) {
-  String deviceId;
-  String resp;
+// Extract the device UUID for 'name' from a TB /api/tenant/devices JSON response.
+// Anchors on "entityType":"DEVICE" to avoid dependence on JSON field order.
+static String extractDeviceId(const String& json, const String& name) {
+  int namePos = json.indexOf("\"name\":\"" + name + "\"");
+  if (namePos < 0) return "";
 
-  // Look up device by name directly (avoids JSON field-order sensitivity)
-  String encoded = name;
-  encoded.replace(" ", "%20");
-  int code = tbGet("/api/tenant/device?deviceName=" + encoded, resp);
-  if (code == 200) {
-    int inner = resp.indexOf("\"id\":{\"id\":\"");
-    if (inner >= 0) {
-      inner += 12;
-      deviceId = resp.substring(inner, resp.indexOf("\"", inner));
-    }
+  // "entityType":"DEVICE" appears in the device's own top-level "id" object.
+  // It should be within ~400 chars of the name field.
+  int etPos = json.lastIndexOf("\"entityType\":\"DEVICE\"", namePos);
+  if (etPos < 0 || (namePos - etPos) > 400) {
+    // Try forward — in case name precedes id in the serialization
+    etPos = json.indexOf("\"entityType\":\"DEVICE\"", namePos);
+    if (etPos < 0 || (etPos - namePos) > 400) return "";
   }
 
-  // Create device if it doesn't exist yet
+  // The UUID sits in "id":"UUID" just before "entityType"
+  int idPos = json.lastIndexOf("\"id\":\"", etPos);
+  if (idPos < 0 || (etPos - idPos) > 60) return "";
+  idPos += 6;
+  String uuid = json.substring(idPos, json.indexOf("\"", idPos));
+  return (uuid.length() >= 32) ? uuid : "";
+}
+
+static bool resolveNodeToken(const String& name, const String& deviceList, char* outTok) {
+  String deviceId = extractDeviceId(deviceList, name);
+
   if (deviceId.length() == 0) {
     Serial.printf("[Auth] creating %s...\n", name.c_str());
     char body[128];
     snprintf(body, sizeof(body), "{\"name\":\"%s\",\"type\":\"default\"}", name.c_str());
     String createResp;
-    code = tbPost("/api/device", body, createResp);
+    int code = tbPost("/api/device", body, createResp);
     if (code != 200) { Serial.printf("[Auth] create failed %d\n", code); return false; }
     int inner = createResp.indexOf("\"id\":{\"id\":\"");
     if (inner < 0) return false;
@@ -346,15 +355,14 @@ static bool resolveNodeToken(const String& name, char* outTok) {
 
   if (deviceId.length() == 0) return false;
 
-  // Fetch credentials
   String credResp;
-  code = tbGet("/api/device/" + deviceId + "/credentials", credResp);
+  int code = tbGet("/api/device/" + deviceId + "/credentials", credResp);
   if (code != 200) return false;
 
   String tok = jsonStr(credResp, "credentialsId");
   if (tok.length() == 0) return false;
   tok.toCharArray(outTok, 64);
-  Serial.printf("[Auth] resolved %s → %s\n", name.c_str(), outTok);
+  Serial.printf("[Auth] resolved %s\n", name.c_str());
   return true;
 }
 
@@ -407,7 +415,7 @@ static void syncNodes() {
     }
     if (!known && nodeCount < MAX_NODES) {
       char tok[64] = "";
-      if (resolveNodeToken(tbNames[i], tok)) {
+      if (resolveNodeToken(tbNames[i], resp, tok)) {
         nodeNames[nodeCount] = tbNames[i];
         memcpy(nodeToks[nodeCount], tok, 64);
         nodeCount++;
