@@ -106,20 +106,34 @@ async function resolveDeviceTokens() {
 
 // ── Post telemetry directly to ThingsBoard device API ────────────────────
 
-async function postTelemetry(deviceName, payload) {
+async function postTelemetry(deviceName, payload, retries = 2) {
   const token = deviceTokens[deviceName];
   if (!token) return;
 
-  const res = await fetch(`${TB_URL}/api/v1/${token}/telemetry`, {
+  const body = JSON.stringify(payload);
+  const doPost = () => fetch(`${TB_URL}/api/v1/${token}/telemetry`, {
     method:  'POST',
     headers: { 'Content-Type': 'application/json' },
-    body:    JSON.stringify(payload),
+    body,
+    signal:  AbortSignal.timeout(8000), // 8s hard timeout
   });
-  const text = await res.text();
-  if (!res.ok) {
-    console.error(`[${deviceName}] POST failed (${res.status}): ${text.slice(0, 120)}`);
+
+  for (let attempt = 0; attempt <= retries; attempt++) {
+    try {
+      const res  = await doPost();
+      const text = await res.text();
+      if (!res.ok) {
+        console.error(`[${deviceName}] HTTP ${res.status} (attempt ${attempt + 1})`);
+        if (attempt < retries) await new Promise(r => setTimeout(r, 1500));
+        else return;
+      } else {
+        return { status: res.status, body: text };
+      }
+    } catch (err) {
+      console.error(`[${deviceName}] Network error (attempt ${attempt + 1}): ${err.cause?.code || err.message}`);
+      if (attempt < retries) await new Promise(r => setTimeout(r, 1500));
+    }
   }
-  return { status: res.status, body: text };
 }
 
 // ── Waveform loop ─────────────────────────────────────────────────────────
