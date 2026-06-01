@@ -70,6 +70,14 @@ static unsigned long lastVitalMs    = 0;
 static unsigned long lastNodeSyncMs = 0;
 static char payload[PAYLOAD_BUF_SIZE];
 
+struct NodePostArgs {
+  int  nodeIdx;
+  char token[64];
+  char buf[800];
+  int  len;
+};
+static volatile bool nodePost401[MAX_NODES];
+
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
 static unsigned long long epochMs() {
@@ -458,6 +466,21 @@ static void setupWiFi() {
   Serial.println(" (skipped)");
 }
 
+// ── Parallel POST task ────────────────────────────────────────────────────────
+
+static void nodePostTask(void* arg) {
+  NodePostArgs* p = (NodePostArgs*)arg;
+  WiFiClientSecure cl; cl.setInsecure();
+  HTTPClient http;
+  http.begin(cl, tbUrl("/api/v1/" + String(p->token) + "/telemetry"));
+  http.addHeader("Content-Type", "application/json");
+  int code = http.POST((uint8_t*)p->buf, p->len);
+  http.end();
+  if (code == 401) nodePost401[p->nodeIdx] = true;
+  free(p);
+  vTaskDelete(NULL);
+}
+
 // ── POST telemetry to a specific node token ───────────────────────────────────
 
 static void postToNode(int nodeIdx, int len) {
@@ -525,19 +548,26 @@ static void publishWaveform() {
   for (int n = 0; n < nodeCount; n++) {
     if (nodeToks[n][0] == '\0') continue;
 
+    NodePostArgs* p = (NodePostArgs*)malloc(sizeof(NodePostArgs));
+    if (!p) { Serial.println("[wave] malloc failed"); continue; }
+
+    p->nodeIdx = n;
+    memcpy(p->token, nodeToks[n], 64);
+
     int phaseOff = n * 67;
-    int pos = 0;
-    pos += snprintf(payload + pos, PAYLOAD_BUF_SIZE - pos, "{\"ecg\":[");
+    p->len = 0;
+    p->len += snprintf(p->buf + p->len, sizeof(p->buf) - p->len, "{\"ecg\":[");
     for (int i = 0; i < BATCH_SIZE; i++)
-      pos += snprintf(payload + pos, PAYLOAD_BUF_SIZE - pos,
+      p->len += snprintf(p->buf + p->len, sizeof(p->buf) - p->len,
         "%s%d", i > 0 ? "," : "", ecgAt(baseIdx + i, phaseOff));
-    pos += snprintf(payload + pos, PAYLOAD_BUF_SIZE - pos, "],\"ppg\":[");
+    p->len += snprintf(p->buf + p->len, sizeof(p->buf) - p->len, "],\"ppg\":[");
     for (int i = 0; i < BATCH_SIZE; i++)
-      pos += snprintf(payload + pos, PAYLOAD_BUF_SIZE - pos,
+      p->len += snprintf(p->buf + p->len, sizeof(p->buf) - p->len,
         "%s%d", i > 0 ? "," : "", ppgAt(baseIdx + i, phaseOff));
-    pos += snprintf(payload + pos, PAYLOAD_BUF_SIZE - pos, "]}");
-    postToNode(n, pos);
-    Serial.printf("[%s] wave %d bytes\n", nodeNames[n].c_str(), pos);
+    p->len += snprintf(p->buf + p->len, sizeof(p->buf) - p->len, "]}");
+
+    xTaskCreate(nodePostTask, "nodePost", 10240, p, 1, NULL);
+    Serial.printf("[%s] wave %d bytes (async)\n", nodeNames[n].c_str(), p->len);
   }
 }
 
@@ -592,6 +622,16 @@ void loop() {
   if (batchReady) {
     publishWaveform();
     batchReady = false;
+  }
+
+  // Handle 401s reported by async post tasks
+  for (int n = 0; n < nodeCount; n++) {
+    if (nodePost401[n]) {
+      Serial.printf("[TB] 401 for %s — re-resolve on next sync\n", nodeNames[n].c_str());
+      nodeToks[n][0] = '\0';
+      saveNodesToNVS();
+      nodePost401[n] = false;
+    }
   }
 
   unsigned long nowMs = millis();
