@@ -375,6 +375,10 @@ static void syncNodes() {
   int code = tbGet("/api/tenant/devices?pageSize=100&page=0", resp);
   if (code != 200) { Serial.printf("[Sync] devices fetch %d\n", code); return; }
 
+  // DEBUG: print first 400 chars so we can see the exact JSON format
+  Serial.println("[Sync] resp[0..400]:");
+  Serial.println(resp.substring(0, 400));
+
   // Collect TB device names that contain "node"
   String tbNames[MAX_NODES];
   int tbCount = 0;
