@@ -34,10 +34,10 @@ const bool  USE_HTTPS = true;
 #define SAMPLE_RATE_HZ       250
 #define SAMPLE_INTERVAL_US   (1000000 / SAMPLE_RATE_HZ)
 #define SAMPLE_INTERVAL_MS   (1000 / SAMPLE_RATE_HZ)
-#define BATCH_SIZE           250
+#define BATCH_SIZE           50
 #define VITAL_INTERVAL_MS    15000
 #define NODE_SYNC_INTERVAL_MS 10000
-#define PAYLOAD_BUF_SIZE     20480
+#define PAYLOAD_BUF_SIZE     4096
 #define MAX_NODES            16
 
 // ── Runtime config ────────────────────────────────────────────────────────────
@@ -60,7 +60,7 @@ static Preferences prefs;
 
 // ── Buffers ───────────────────────────────────────────────────────────────────
 
-static int16_t ecgWork[BATCH_SIZE], ppgWork[BATCH_SIZE];
+static int16_t ecgWork[BATCH_SIZE];
 static volatile unsigned long long readyTs          = 0;
 static volatile uint32_t           readySampleCount = 0;
 static volatile bool               batchReady       = false;
@@ -481,7 +481,6 @@ static void postToNode(int nodeIdx, int len) {
 
 // ── Demo signal generators (phase-offset per node) ───────────────────────────
 // ECG: Gaussian spike  2048 + 2000·exp(-((phase-0.5)·20)²) + noise±20
-// PPG: sine wave       2048 + 800·sin(2π·phase)            + noise±10
 // Period = 200 samples = 0.8 s at 250 Hz → 75 BPM
 // Phase stagger between nodes: 67 samples (same as test-http-stream.js)
 
@@ -489,12 +488,6 @@ static int16_t ecgAt(uint32_t idx, int phaseOff) {
   float phase = (float)((idx + phaseOff) % 200) / 200.0f;
   float d = (phase - 0.5f) * 20.0f;
   float v = 2000.0f * expf(-(d * d)) + (float)(rand() % 40 - 20);
-  return (int16_t)constrain((int)(2048.0f + v), 0, 4095);
-}
-
-static int16_t ppgAt(uint32_t idx, int phaseOff) {
-  float phase = (float)((idx + phaseOff) % 200) / 200.0f;
-  float v = 800.0f * sinf(2.0f * (float)M_PI * phase) + (float)(rand() % 20 - 10);
   return (int16_t)constrain((int)(2048.0f + v), 0, 4095);
 }
 
@@ -506,7 +499,6 @@ static void onSampleTimer(void*) {
   // Only need to store one channel for the timer tick; per-node signals
   // are computed on-the-fly in publishWaveform using readySampleCount.
   ecgWork[workIdx] = ecgAt(sampleCount, 0);
-  ppgWork[workIdx] = ecgAt(sampleCount, 0);  // unused; kept for symmetry
   sampleCount++;
   if (++workIdx < BATCH_SIZE) return;
   workIdx = 0;
@@ -533,10 +525,9 @@ static void publishWaveform() {
       unsigned long long ts =
         batchTs - (unsigned long long)(BATCH_SIZE - 1 - i) * SAMPLE_INTERVAL_MS;
       pos += snprintf(payload + pos, PAYLOAD_BUF_SIZE - pos,
-        "%s{\"ts\":%llu,\"values\":{\"ecg\":%d,\"ppg\":%d}}",
+        "%s{\"ts\":%llu,\"values\":{\"ecg\":%d}}",
         i > 0 ? "," : "", ts,
-        ecgAt(baseIdx + i, phaseOff),
-        ppgAt(baseIdx + i, phaseOff));
+        ecgAt(baseIdx + i, phaseOff));
     }
     pos += snprintf(payload + pos, PAYLOAD_BUF_SIZE - pos, "]");
     postToNode(n, pos);
@@ -552,23 +543,22 @@ static void publishVitals() {
     if (nodeToks[n][0] == '\0') continue;
     // Slight per-node variation in vitals
     float ecgHr = 72.0f + n * 3.0f;
-    float ppgHr = 71.0f + n * 3.0f;
     float spo2  = 98.5f - n * 0.3f;
     float temp  = 36.6f + n * 0.1f;
     int pos;
     if (ts > 0) {
       pos = snprintf(payload, PAYLOAD_BUF_SIZE,
         "[{\"ts\":%llu,\"values\":"
-        "{\"ecgHeartRate\":%.1f,\"ppgHeartRate\":%.1f,\"spo2\":%.1f,\"temperature\":%.1f}}]",
-        ts, ecgHr, ppgHr, spo2, temp);
+        "{\"ecgHeartRate\":%.1f,\"spo2\":%.1f,\"temperature\":%.1f}}]",
+        ts, ecgHr, spo2, temp);
     } else {
       pos = snprintf(payload, PAYLOAD_BUF_SIZE,
         "[{\"values\":"
-        "{\"ecgHeartRate\":%.1f,\"ppgHeartRate\":%.1f,\"spo2\":%.1f,\"temperature\":%.1f}}]",
-        ecgHr, ppgHr, spo2, temp);
+        "{\"ecgHeartRate\":%.1f,\"spo2\":%.1f,\"temperature\":%.1f}}]",
+        ecgHr, spo2, temp);
     }
     postToNode(n, pos);
-    Serial.printf("[%s] vitals ECG-HR:%.1f SpO2:%.1f\n", nodeNames[n].c_str(), ecgHr, spo2);
+    Serial.printf("[%s] vitals HR:%.1f SpO2:%.1f\n", nodeNames[n].c_str(), ecgHr, spo2);
   }
 }
 
