@@ -63,6 +63,7 @@ static Preferences prefs;
 
 static WiFiClient   mqttNet[MAX_NODES];
 static PubSubClient mqttClients[MAX_NODES];
+static bool         mqttReady[MAX_NODES] = {};
 
 // ── Buffers ───────────────────────────────────────────────────────────────────
 
@@ -406,11 +407,13 @@ static void syncNodes() {
     }
     if (!found) {
       Serial.printf("[Sync] removed: %s\n", nodeNames[i].c_str());
-      mqttClients[i].disconnect();
+      mqttDisconnect(i);
       for (int k = i; k < nodeCount - 1; k++) {
         nodeNames[k] = nodeNames[k + 1];
         memcpy(nodeToks[k], nodeToks[k + 1], 64);
+        mqttReady[k] = mqttReady[k + 1];
       }
+      mqttReady[nodeCount - 1] = false;
       nodeCount--;
     }
   }
@@ -477,16 +480,25 @@ static bool mqttConnect(int n) {
   char clientId[32];
   snprintf(clientId, sizeof(clientId), "esp32_n%d_%lu", n, millis());
   if (mqttClients[n].connect(clientId, nodeToks[n], "")) {
+    mqttReady[n] = true;
     Serial.printf("[MQTT] %s connected\n", nodeNames[n].c_str());
     return true;
   }
+  mqttReady[n] = false;
   Serial.printf("[MQTT] %s failed state=%d\n", nodeNames[n].c_str(), mqttClients[n].state());
   return false;
 }
 
 static bool mqttEnsure(int n) {
-  if (mqttClients[n].connected()) return true;
+  if (mqttReady[n] && mqttClients[n].connected()) return true;
   return mqttConnect(n);
+}
+
+static void mqttDisconnect(int n) {
+  if (mqttReady[n]) {
+    mqttClients[n].disconnect();
+    mqttReady[n] = false;
+  }
 }
 
 // ── Demo signal generators (phase-offset per node) ───────────────────────────
