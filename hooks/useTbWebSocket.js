@@ -49,7 +49,11 @@ export function useTbWebSocket(deviceId, tbToken, ecgSampleFreq = 250) {
         const pts = pendingEcg.current.splice(0).sort((a, b) => a.ts - b.ts);
         const cap = maxPointsRef.current;
         setEcgData(prev => {
-          const next = [...prev, ...pts];
+          const lastTs = prev.length ? prev[prev.length - 1].ts : 0;
+          // Drop any points older than or equal to last known timestamp (avoid overlaps)
+          const fresh = pts.filter(p => p.ts > lastTs);
+          if (fresh.length === 0) return prev;
+          const next = [...prev, ...fresh];
           return next.length > cap ? next.slice(-cap) : next;
         });
       }

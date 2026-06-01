@@ -95,6 +95,12 @@ export default function TrendChart({ series, metricKey, loading, hideControls = 
     const step       = Math.max(1, Math.floor(windowed.length / MAX_DISPLAY));
     const liveDisplay = step > 1 ? windowed.filter((_, i) => i % step === 0) : windowed;
 
+    const liveVals  = liveDisplay.map(d => d.value);
+    const liveMin   = liveVals.length ? Math.min(...liveVals) : 0;
+    const liveMax   = liveVals.length ? Math.max(...liveVals) : 1;
+    const livePad   = (liveMax - liveMin) * 0.12 || 50;
+    const liveDomain = [Math.round(liveMin - livePad), Math.round(liveMax + livePad)];
+
     const fmtTs = (ts) => new Date(ts).toLocaleTimeString("en-US", {
       hour: "2-digit", minute: "2-digit", second: "2-digit", hour12: false,
     });
@@ -115,7 +121,7 @@ export default function TrendChart({ series, metricKey, loading, hideControls = 
             interval="preserveStartEnd"
           />
           <YAxis
-            domain={["auto", "auto"]}
+            domain={liveDomain}
             tick={{ fill: "rgba(120,160,200,0.45)", fontSize: 9, fontFamily: "Share Tech Mono, monospace" }}
             tickLine={false}
             axisLine={false}
