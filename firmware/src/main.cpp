@@ -372,6 +372,8 @@ static bool resolveNodeToken(const String& name, const String& deviceList, char*
   return true;
 }
 
+static bool mqttConnect(int n);  // forward declaration
+
 // ── Sync node registry with ThingsBoard ───────────────────────────────────────
 
 static void syncNodes() {
