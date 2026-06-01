@@ -3,17 +3,9 @@
 // When a batch is complete it swaps to a ready buffer and sets batchReady.
 // loop() posts the batch directly to ThingsBoard using the device's own token.
 //
-// First boot: no WiFi credentials in NVS → starts "HealthMonitor-Setup" AP
-//   and serves a captive portal form to collect WiFi + TB config.
+// First boot: no config in NVS → starts "HealthMonitor-Setup" AP and serves
+//   a captive portal to collect WiFi SSID/password and TB device token.
 //   After save the device restarts and connects normally.
-//
-// Token acquisition (first boot after config) mirrors ingest.js resolveDevice:
-//   1. POST /api/auth/login            → admin JWT
-//   2. GET  /api/tenant/devices        → find device by name (or create it)
-//   3. GET  /api/device/{id}/credentials → access token
-//   Token persisted in NVS; subsequent boots skip all three calls.
-//
-// No FreeRTOS tasks or semaphores — the timer drives everything.
 // ─────────────────────────────────────────────────────────────────────────────
 
 #include <Arduino.h>
@@ -27,7 +19,7 @@
 #include <time.h>
 #include <math.h>
 
-// ── Compile-time defaults (overridden by captive portal / NVS) ────────────────
+// ── Compile-time constants ────────────────────────────────────────────────────
 
 const char* TB_HOST   = "c7.hust-2slab.org";
 const bool  USE_HTTPS = true;
@@ -38,19 +30,14 @@ const bool  USE_HTTPS = true;
 #define BATCH_SIZE          250
 #define VITAL_INTERVAL_MS   15000
 #define PAYLOAD_BUF_SIZE    20480
+#define PHASE_OFFSET        0   // Node2→67, Node3→133
 
-// ── Runtime config — loaded from NVS, filled by captive portal ───────────────
+// ── Runtime config (loaded from NVS) ─────────────────────────────────────────
 
-static char wifiSsid[64]   = "";
-static char wifiPass[64]   = "";
-static char nodeName[32]   = "";
-static char tbAdminUser[64] = "";
-static char tbAdminPass[64] = "";
+static char wifiSsid[64]     = "";
+static char wifiPass[64]     = "";
+static char deviceToken[64]  = "";
 
-// ── Runtime state ─────────────────────────────────────────────────────────────
-
-static char   deviceToken[64] = "";
-static String adminJwt        = "";
 static Preferences prefs;
 
 // ── Buffers ───────────────────────────────────────────────────────────────────
@@ -77,47 +64,19 @@ static String tbUrl(const String& path) {
   return String(USE_HTTPS ? "https" : "http") + "://" + TB_HOST + path;
 }
 
-static String jsonStr(const String& json, const String& key) {
-  String needle = "\"" + key + "\":\"";
-  int s = json.indexOf(needle);
-  if (s < 0) return "";
-  s += needle.length();
-  int e = json.indexOf("\"", s);
-  return e > s ? json.substring(s, e) : "";
-}
-
 // ── NVS ───────────────────────────────────────────────────────────────────────
 
 static bool loadConfig() {
   prefs.begin("hm", true);
-  String ssid = prefs.getString("wifi_ssid", "");
-  String pass = prefs.getString("wifi_pass", "");
-  String node = prefs.getString("node_name", "");
-  String user = prefs.getString("tb_user",   "");
-  String tpas = prefs.getString("tb_pass",   "");
+  String ssid  = prefs.getString("wifi_ssid", "");
+  String pass  = prefs.getString("wifi_pass", "");
+  String token = prefs.getString("token",     "");
   prefs.end();
-  if (ssid.length() == 0) return false;
+  if (ssid.length() == 0 || token.length() == 0) return false;
   ssid.toCharArray(wifiSsid,    sizeof(wifiSsid));
   pass.toCharArray(wifiPass,    sizeof(wifiPass));
-  node.toCharArray(nodeName,    sizeof(nodeName));
-  user.toCharArray(tbAdminUser, sizeof(tbAdminUser));
-  tpas.toCharArray(tbAdminPass, sizeof(tbAdminPass));
+  token.toCharArray(deviceToken, sizeof(deviceToken));
   return true;
-}
-
-static bool loadTokenFromNVS() {
-  prefs.begin("hm", true);
-  String t = prefs.getString("token", "");
-  prefs.end();
-  if (t.length() == 0) return false;
-  t.toCharArray(deviceToken, sizeof(deviceToken));
-  return true;
-}
-
-static void saveTokenToNVS(const char* token) {
-  prefs.begin("hm", false);
-  prefs.putString("token", token);
-  prefs.end();
 }
 
 // ── Captive portal ────────────────────────────────────────────────────────────
@@ -136,25 +95,19 @@ static const char PORTAL_HTML[] = R"html(
   label{display:block;font-size:13px;font-weight:600;color:#444;margin-bottom:5px}
   input{display:block;width:100%;padding:10px 12px;border:1px solid #ddd;border-radius:8px;font-size:15px;margin-bottom:16px;outline:none}
   input:focus{border-color:#2196F3}
-  hr{border:none;border-top:1px solid #eee;margin:18px 0}
   button{width:100%;padding:13px;background:#2196F3;color:#fff;border:none;border-radius:8px;font-size:16px;font-weight:600;cursor:pointer}
   button:hover{background:#1976D2}
 </style></head><body>
 <div class="card">
   <h2>HealthMonitor Setup</h2>
-  <p>Configure WiFi and ThingsBoard credentials.</p>
+  <p>Enter your WiFi credentials and the ThingsBoard device access token.</p>
   <form method="POST" action="/save">
     <label>WiFi Network (SSID)</label>
     <input name="ssid" placeholder="Your WiFi name" required>
     <label>WiFi Password</label>
     <input name="pass" type="password" placeholder="Leave blank if open network">
-    <hr>
-    <label>Node Name</label>
-    <input name="node" value="Node1" placeholder="Node1">
-    <label>ThingsBoard Admin Email</label>
-    <input name="tbuser" placeholder="tenant@thingsboard.org" required>
-    <label>ThingsBoard Admin Password</label>
-    <input name="tbpass" type="password" placeholder="tenant" required>
+    <label>ThingsBoard Device Token</label>
+    <input name="token" placeholder="Paste token from TB dashboard" required>
     <button type="submit">Save &amp; Connect</button>
   </form>
 </div>
@@ -165,7 +118,7 @@ static void startConfigPortal() {
   Serial.println("[Portal] Starting AP: HealthMonitor-Setup");
   WiFi.softAP("HealthMonitor-Setup");
   IPAddress apIP = WiFi.softAPIP();
-  Serial.printf("[Portal] Open http://%s in your browser\n", apIP.toString().c_str());
+  Serial.printf("[Portal] Open http://%s\n", apIP.toString().c_str());
 
   DNSServer dns;
   dns.start(53, "*", apIP);
@@ -177,33 +130,25 @@ static void startConfigPortal() {
   });
 
   server.on("/save", HTTP_POST, [&]() {
-    String ssid   = server.arg("ssid");
-    String pass   = server.arg("pass");
-    String node   = server.arg("node");
-    String tbuser = server.arg("tbuser");
-    String tbpass = server.arg("tbpass");
-    if (node.length() == 0) node = "Node1";
+    String ssid  = server.arg("ssid");
+    String pass  = server.arg("pass");
+    String token = server.arg("token");
 
     prefs.begin("hm", false);
     prefs.putString("wifi_ssid", ssid);
     prefs.putString("wifi_pass", pass);
-    prefs.putString("node_name", node);
-    prefs.putString("tb_user",   tbuser);
-    prefs.putString("tb_pass",   tbpass);
-    prefs.remove("token");  // clear any stale device token
+    prefs.putString("token",     token);
     prefs.end();
 
-    String html = String(
+    server.send(200, "text/html",
       "<html><body style='font-family:sans-serif;max-width:420px;margin:40px auto;padding:24px'>"
       "<h2 style='color:#4CAF50'>Saved!</h2>"
-      "<p>Connecting to <b>") + ssid + "</b> as node <b>" + node + "</b>.</p>"
-      "<p>Device is restarting&hellip;</p></body></html>";
-    server.send(200, "text/html", html);
+      "<p>Connecting to <b>" + ssid + "</b>.</p>"
+      "<p>Device is restarting&hellip;</p></body></html>");
     delay(1500);
     ESP.restart();
   });
 
-  // Redirect any unknown path back to the form (captive portal detection)
   server.onNotFound([&]() {
     server.sendHeader("Location", "http://192.168.4.1/");
     server.send(302, "text/plain", "");
@@ -217,136 +162,12 @@ static void startConfigPortal() {
   }
 }
 
-// ── TB admin API helpers ──────────────────────────────────────────────────────
-
-static int tbGet(const String& path, String& out) {
-  WiFiClientSecure client;
-  client.setInsecure();
-  HTTPClient http;
-  http.begin(client, tbUrl(path));
-  http.addHeader("X-Authorization", "Bearer " + adminJwt);
-  int code = http.GET();
-  out = http.getString();
-  http.end();
-  return code;
-}
-
-static int tbPost(const String& path, const String& body, String& out) {
-  WiFiClientSecure client;
-  client.setInsecure();
-  HTTPClient http;
-  http.begin(client, tbUrl(path));
-  http.addHeader("Content-Type", "application/json");
-  if (adminJwt.length()) http.addHeader("X-Authorization", "Bearer " + adminJwt);
-  int code = http.POST(body);
-  out = http.getString();
-  http.end();
-  return code;
-}
-
-// ── resolveDeviceToken ────────────────────────────────────────────────────────
-
-static bool resolveDeviceToken() {
-  String resp;
-
-  Serial.println("[Auth] logging in...");
-  char loginBody[192];
-  snprintf(loginBody, sizeof(loginBody),
-    "{\"username\":\"%s\",\"password\":\"%s\"}", tbAdminUser, tbAdminPass);
-  int code = tbPost("/api/auth/login", loginBody, resp);
-  Serial.printf("[Auth] login %d\n", code);
-  if (code != 200) return false;
-  adminJwt = jsonStr(resp, "token");
-  if (adminJwt.length() == 0) { Serial.println("[Auth] no token in response"); return false; }
-
-  Serial.printf("[Auth] looking up %s...\n", nodeName);
-  code = tbGet("/api/tenant/devices?pageSize=100&page=0", resp);
-  if (code != 200) return false;
-
-  String deviceId;
-  int search = 0;
-  while (true) {
-    int namePos = resp.indexOf("\"name\":\"" + String(nodeName) + "\"", search);
-    if (namePos < 0) break;
-    int idPos = resp.lastIndexOf("\"id\":{\"id\":\"", namePos);
-    if (idPos >= 0) {
-      idPos += 12;
-      int idEnd = resp.indexOf("\"", idPos);
-      deviceId = resp.substring(idPos, idEnd);
-    }
-    break;
-  }
-
-  if (deviceId.length() == 0) {
-    Serial.printf("[Auth] creating device %s...\n", nodeName);
-    char createBody[128];
-    snprintf(createBody, sizeof(createBody), "{\"name\":\"%s\",\"type\":\"default\"}", nodeName);
-    code = tbPost("/api/device", createBody, resp);
-    if (code != 200) return false;
-    int inner = resp.indexOf("\"id\":{\"id\":\"");
-    if (inner >= 0) {
-      inner += 12;
-      deviceId = resp.substring(inner, resp.indexOf("\"", inner));
-    }
-  }
-  Serial.printf("[Auth] device id: %s\n", deviceId.c_str());
-
-  code = tbGet("/api/device/" + deviceId + "/credentials", resp);
-  if (code != 200) return false;
-
-  String token = jsonStr(resp, "credentialsId");
-  if (token.length() == 0) { Serial.println("[Auth] credentialsId missing"); return false; }
-
-  token.toCharArray(deviceToken, sizeof(deviceToken));
-  saveTokenToNVS(deviceToken);
-  Serial.printf("[Auth] token cached: %s\n", deviceToken);
-  return true;
-}
-
-// ── Demo signal generators ────────────────────────────────────────────────────
-// ECG: Gaussian spike  2048 + 2000·exp(-((phase-0.5)·20)²) + noise±20
-// PPG: sine wave       2048 + 800·sin(2π·phase)            + noise±10
-// Period = 200 samples = 0.8 s at 250 Hz → 75 BPM
-
-#define PHASE_OFFSET  0   // Node2→67, Node3→133
-
-static uint32_t sampleCount = 0;
-
-static int16_t ecgDemo(uint32_t idx) {
-  float phase = (float)((idx + PHASE_OFFSET) % 200) / 200.0f;
-  float d     = (phase - 0.5f) * 20.0f;
-  float v     = 2000.0f * expf(-(d * d)) + (float)(rand() % 40 - 20);
-  return (int16_t)constrain((int)(2048.0f + v), 0, 4095);
-}
-
-static int16_t ppgDemo(uint32_t idx) {
-  float phase = (float)((idx + PHASE_OFFSET) % 200) / 200.0f;
-  float v     = 800.0f * sinf(2.0f * (float)M_PI * phase) + (float)(rand() % 20 - 10);
-  return (int16_t)constrain((int)(2048.0f + v), 0, 4095);
-}
-
-// ── 250Hz sample timer ────────────────────────────────────────────────────────
-
-static void onSampleTimer(void*) {
-  ecgWork[workIdx] = ecgDemo(sampleCount);
-  ppgWork[workIdx] = ppgDemo(sampleCount);
-  sampleCount++;
-  if (++workIdx < BATCH_SIZE) return;
-  workIdx = 0;
-
-  if (batchReady) return;
-  memcpy(ecgReady, ecgWork, BATCH_SIZE * sizeof(int16_t));
-  memcpy(ppgReady, ppgWork, BATCH_SIZE * sizeof(int16_t));
-  readyTs    = epochMs();
-  batchReady = true;
-}
-
 // ── WiFi + NTP ────────────────────────────────────────────────────────────────
 
 static void setupWiFi() {
   WiFi.begin(wifiSsid, wifiPass);
   Serial.printf("WiFi connecting to %s", wifiSsid);
-  for (int i = 0; i < 40; i++) {       // 20 s timeout
+  for (int i = 0; i < 40; i++) {
     if (WiFi.status() == WL_CONNECTED) break;
     delay(500); Serial.print(".");
   }
@@ -381,13 +202,12 @@ static void postToTB(int len) {
   int code = http.POST((uint8_t*)payload, len);
   http.end();
   if (code == 401) {
-    Serial.println("[TB] 401 — stale token, clearing NVS and re-resolving...");
+    Serial.println("[TB] 401 — invalid token, restarting to portal");
     prefs.begin("hm", false);
     prefs.remove("token");
     prefs.end();
-    deviceToken[0] = '\0';
-    while (!resolveDeviceToken()) { Serial.println("retrying in 5s..."); delay(5000); }
-    return;
+    delay(500);
+    ESP.restart();
   }
   if (code > 0) {
     if (code >= 300) Serial.printf("[TB] %d\n", code);
@@ -411,7 +231,7 @@ static void publishWaveform() {
   }
   pos += snprintf(payload + pos, PAYLOAD_BUF_SIZE - pos, "]");
   postToTB(pos);
-  Serial.printf("[%s] wave %d bytes\n", nodeName, pos);
+  Serial.printf("[TB] wave %d bytes\n", pos);
 }
 
 // ── Publish vitals ────────────────────────────────────────────────────────────
@@ -431,8 +251,41 @@ static void publishVitals(float ecgHr, float ppgHr, float spo2, float temp) {
       ecgHr, ppgHr, spo2, temp);
   }
   postToTB(pos);
-  Serial.printf("[%s] vitals ECG-HR:%.1f PPG-HR:%.1f SpO2:%.1f Temp:%.1f\n",
-                nodeName, ecgHr, ppgHr, spo2, temp);
+  Serial.printf("[TB] vitals ECG-HR:%.1f PPG-HR:%.1f SpO2:%.1f Temp:%.1f\n",
+                ecgHr, ppgHr, spo2, temp);
+}
+
+// ── Demo signal generators ────────────────────────────────────────────────────
+
+static uint32_t sampleCount = 0;
+
+static int16_t ecgDemo(uint32_t idx) {
+  float phase = (float)((idx + PHASE_OFFSET) % 200) / 200.0f;
+  float d     = (phase - 0.5f) * 20.0f;
+  float v     = 2000.0f * expf(-(d * d)) + (float)(rand() % 40 - 20);
+  return (int16_t)constrain((int)(2048.0f + v), 0, 4095);
+}
+
+static int16_t ppgDemo(uint32_t idx) {
+  float phase = (float)((idx + PHASE_OFFSET) % 200) / 200.0f;
+  float v     = 800.0f * sinf(2.0f * (float)M_PI * phase) + (float)(rand() % 20 - 10);
+  return (int16_t)constrain((int)(2048.0f + v), 0, 4095);
+}
+
+// ── 250Hz sample timer ────────────────────────────────────────────────────────
+
+static void onSampleTimer(void*) {
+  ecgWork[workIdx] = ecgDemo(sampleCount);
+  ppgWork[workIdx] = ppgDemo(sampleCount);
+  sampleCount++;
+  if (++workIdx < BATCH_SIZE) return;
+  workIdx = 0;
+
+  if (batchReady) return;
+  memcpy(ecgReady, ecgWork, BATCH_SIZE * sizeof(int16_t));
+  memcpy(ppgReady, ppgWork, BATCH_SIZE * sizeof(int16_t));
+  readyTs    = epochMs();
+  batchReady = true;
 }
 
 // ── Signal processing stubs ───────────────────────────────────────────────────
@@ -447,23 +300,13 @@ static float readTemperature()                   { return 36.6f; }
 void setup() {
   Serial.begin(115200);
 
-  // Load config; if no WiFi SSID saved → captive portal (blocks until configured)
   if (!loadConfig()) {
-    Serial.println("[Setup] No config found — starting captive portal");
+    Serial.println("[Setup] No config — starting captive portal");
     startConfigPortal();  // never returns; restarts after save
   }
-  Serial.printf("[Setup] Node: %s  WiFi: %s\n", nodeName, wifiSsid);
+  Serial.printf("[Setup] WiFi: %s  Token: %s\n", wifiSsid, deviceToken);
 
   setupWiFi();
-
-  if (loadTokenFromNVS()) {
-    Serial.printf("[%s] token loaded from NVS: %s\n", nodeName, deviceToken);
-  } else {
-    while (!resolveDeviceToken()) {
-      Serial.println("retrying in 5s...");
-      delay(5000);
-    }
-  }
 
   esp_timer_create_args_t args = {};
   args.callback = onSampleTimer;
@@ -472,7 +315,7 @@ void setup() {
   esp_timer_create(&args, &timer);
   esp_timer_start_periodic(timer, SAMPLE_INTERVAL_US);
 
-  Serial.printf("Ready — [%s] 250Hz\n", nodeName);
+  Serial.println("Ready — 250Hz");
 }
 
 void loop() {
