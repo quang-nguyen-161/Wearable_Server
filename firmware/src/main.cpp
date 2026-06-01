@@ -529,6 +529,7 @@ static void publishWaveform() {
 
   for (int n = 0; n < nodeCount; n++) {
     if (nodeToks[n][0] == '\0') continue;
+    if (nodeNames[n] != "Node1") continue;
 
     int phaseOff = n * 67;
     int pos = 0;
