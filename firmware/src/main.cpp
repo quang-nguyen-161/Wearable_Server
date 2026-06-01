@@ -314,40 +314,47 @@ static int tbPost(const String& path, const String& body, String& out) {
 
 // ── Resolve one node's device token via admin API ─────────────────────────────
 
-static bool resolveNodeToken(const String& name, const String& deviceList, char* outTok) {
-  // Find device ID in the already-fetched device list
+static bool resolveNodeToken(const String& name, char* outTok) {
   String deviceId;
-  int namePos = deviceList.indexOf("\"name\":\"" + name + "\"");
-  if (namePos >= 0) {
-    int idPos = deviceList.lastIndexOf("\"id\":{\"id\":\"", namePos);
-    if (idPos >= 0) {
-      idPos += 12;
-      deviceId = deviceList.substring(idPos, deviceList.indexOf("\"", idPos));
+  String resp;
+
+  // Look up device by name directly (avoids JSON field-order sensitivity)
+  String encoded = name;
+  encoded.replace(" ", "%20");
+  int code = tbGet("/api/tenant/device?deviceName=" + encoded, resp);
+  if (code == 200) {
+    int inner = resp.indexOf("\"id\":{\"id\":\"");
+    if (inner >= 0) {
+      inner += 12;
+      deviceId = resp.substring(inner, resp.indexOf("\"", inner));
     }
   }
 
-  // Create device if not found
+  // Create device if it doesn't exist yet
   if (deviceId.length() == 0) {
     Serial.printf("[Auth] creating %s...\n", name.c_str());
     char body[128];
     snprintf(body, sizeof(body), "{\"name\":\"%s\",\"type\":\"default\"}", name.c_str());
-    String resp;
-    int code = tbPost("/api/device", body, resp);
-    if (code != 200) return false;
-    int inner = resp.indexOf("\"id\":{\"id\":\"");
+    String createResp;
+    code = tbPost("/api/device", body, createResp);
+    if (code != 200) { Serial.printf("[Auth] create failed %d\n", code); return false; }
+    int inner = createResp.indexOf("\"id\":{\"id\":\"");
     if (inner < 0) return false;
     inner += 12;
-    deviceId = resp.substring(inner, resp.indexOf("\"", inner));
+    deviceId = createResp.substring(inner, createResp.indexOf("\"", inner));
   }
 
+  if (deviceId.length() == 0) return false;
+
   // Fetch credentials
-  String resp;
-  int code = tbGet("/api/device/" + deviceId + "/credentials", resp);
+  String credResp;
+  code = tbGet("/api/device/" + deviceId + "/credentials", credResp);
   if (code != 200) return false;
 
-  String tok = jsonStr(resp, "credentialsId");
+  String tok = jsonStr(credResp, "credentialsId");
   if (tok.length() == 0) return false;
   tok.toCharArray(outTok, 64);
+  Serial.printf("[Auth] resolved %s → %s\n", name.c_str(), outTok);
   return true;
 }
 
@@ -400,7 +407,7 @@ static void syncNodes() {
     }
     if (!known && nodeCount < MAX_NODES) {
       char tok[64] = "";
-      if (resolveNodeToken(tbNames[i], resp, tok)) {
+      if (resolveNodeToken(tbNames[i], tok)) {
         nodeNames[nodeCount] = tbNames[i];
         memcpy(nodeToks[nodeCount], tok, 64);
         nodeCount++;
