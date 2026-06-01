@@ -108,7 +108,8 @@ export default async function handler(req, res) {
   }
 
   try {
-    const jwtToken = await getTbToken();
+    // Use forwarded TB token from client (bypasses Cloudflare) or fall back to server auth
+    const jwtToken = req.headers['x-tb-token'] || await getTbToken();
     const { token: deviceToken } = await resolveDevice(jwtToken, deviceName);
 
     const batchTs  = ts ?? Date.now();

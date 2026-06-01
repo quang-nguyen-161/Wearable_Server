@@ -11,15 +11,14 @@
  *
  *   MQTT  → ecgHeartRate / ppgHeartRate / spo2 / temperature  (gateway API, every 15s)
  *
- * Requires the Next.js dev server to be running: npm run dev
+ * Targets the production server at wearable-server.vercel.app.
  *
- * Run: node scripts/test-http-stream.js
- *  or: node --env-file=.env.local scripts/test-http-stream.js
+ * Run: node --env-file=.env.local scripts/test-http-stream.js
  */
 
 'use strict';
 
-const http = require('http');
+const https = require('https');
 const fs   = require('fs');
 
 // ── Load .env.local if present ────────────────────────────────────────────
@@ -41,11 +40,15 @@ loadEnv('.env.local');
 
 // ── Config ────────────────────────────────────────────────────────────────
 
-const SERVER_HOST    = 'localhost';
-const SERVER_PORT    = 3000;
+const SERVER_HOST    = 'wearable-server.vercel.app';
+const SERVER_PORT    = 443;
 const INGEST_PATH    = '/api/telemetry/ingest';
 
-const TB_BASE_URL = process.env.TB_BASE_URL || '';
+const TB_BASE_URL = (process.env.TB_BASE_URL || '').replace(/\/$/, '');
+const TB_USER     = process.env.TB_USERNAME || '';
+const TB_PASS     = process.env.TB_PASSWORD || '';
+
+let tbToken = null;
 
 const BATCH_SIZE         = 50;    // samples per POST — keep ≤50 for TB Cloud rate limits
 const SAMPLE_INTERVAL_MS = 4;     // 4ms per sample = 250Hz
@@ -74,16 +77,34 @@ function ppgSample(i, offset) {
   return Math.round(2048 + 800 * Math.sin(2 * Math.PI * phase) + (Math.random() - 0.5) * 20);
 }
 
-// ── POST to our ingest endpoint ───────────────────────────────────────────
+// ── Login to ThingsBoard directly (local machine bypasses Cloudflare) ────────
+
+async function login() {
+  const res = await fetch(`${TB_BASE_URL}/api/auth/login`, {
+    method:  'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body:    JSON.stringify({ username: TB_USER, password: TB_PASS }),
+  });
+  if (!res.ok) throw new Error(`TB login failed (${res.status})`);
+  const { token } = await res.json();
+  tbToken = token;
+  console.log('[Auth] Logged in to ThingsBoard ✓');
+}
+
+// ── POST to ingest — forwards TB JWT so Vercel doesn't need its own auth ──
 
 function postIngest(body) {
   const raw = JSON.stringify(body);
-  const req = http.request({
+  const req = https.request({
     hostname: SERVER_HOST,
     port:     SERVER_PORT,
     path:     INGEST_PATH,
     method:   'POST',
-    headers:  { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(raw) },
+    headers:  {
+      'Content-Type':   'application/json',
+      'Content-Length': Buffer.byteLength(raw),
+      'x-tb-token':     tbToken || '',
+    },
   }, (res) => {
     let data = '';
     res.on('data', c => data += c);
@@ -151,15 +172,18 @@ function startNode(node, delayMs) {
 
 // ── Start ─────────────────────────────────────────────────────────────────
 
-console.log('╔══════════════════════════════════════════════════════════╗');
-console.log('║  Health Monitor — Server-Decoded Stream (3 nodes, 250Hz)║');
-console.log('╚══════════════════════════════════════════════════════════╝');
-console.log(`HTTP  → http://${SERVER_HOST}:${SERVER_PORT}${INGEST_PATH}`);
-console.log(`        Waveform: ${BATCH_SIZE} samples × ${SAMPLE_INTERVAL_MS}ms = ${BATCH_SIZE * SAMPLE_INTERVAL_MS}ms per batch`);
-console.log(`        Vitals: every ${VITAL_INTERVAL_MS / 1000}s (via same HTTP endpoint)`);
-console.log();
-console.log('Requires: npm run dev  (Next.js server on port 3000)');
-console.log(`Verify:   ${TB_BASE_URL || 'https://c7.hust-2slab.org'} → Node1/Node2/Node3 → Latest Telemetry`);
-console.log('Press Ctrl+C to stop\n');
+(async () => {
+  console.log('╔══════════════════════════════════════════════════════════╗');
+  console.log('║  Health Monitor — Server-Decoded Stream (3 nodes, 250Hz)║');
+  console.log('╚══════════════════════════════════════════════════════════╝');
+  console.log(`HTTPS → https://${SERVER_HOST}${INGEST_PATH}`);
+  console.log(`        Waveform: ${BATCH_SIZE} samples × ${SAMPLE_INTERVAL_MS}ms = ${BATCH_SIZE * SAMPLE_INTERVAL_MS}ms per batch`);
+  console.log(`        Vitals: every ${VITAL_INTERVAL_MS / 1000}s`);
+  console.log('Press Ctrl+C to stop\n');
 
-NODES.forEach((node, i) => startNode(node, i * 333));
+  await login();
+
+  publishVitals();
+  setInterval(publishVitals, VITAL_INTERVAL_MS);
+  NODES.forEach((node, i) => startNode(node, i * 333));
+})().catch(err => { console.error(err.message); process.exit(1); });
