@@ -83,6 +83,11 @@ static String tbUrl(const String& path) {
   return String(USE_HTTPS ? "https" : "http") + "://" + TB_HOST + path;
 }
 
+// Telemetry uses plain HTTP port 8080 — no TLS overhead on high-freq path
+static String telemUrl(const char* token) {
+  return String("http://") + TB_HOST + ":8080/api/v1/" + token + "/telemetry";
+}
+
 static String jsonStr(const String& json, const String& key) {
   String needle = "\"" + key + "\":\"";
   int s = json.indexOf(needle);
@@ -461,9 +466,9 @@ static void setupWiFi() {
 // ── POST telemetry to a specific node token ───────────────────────────────────
 
 static void postToNode(int nodeIdx, int len) {
-  WiFiClientSecure cl; cl.setInsecure();
+  WiFiClient cl;
   HTTPClient http;
-  http.begin(cl, tbUrl("/api/v1/" + String(nodeToks[nodeIdx]) + "/telemetry"));
+  http.begin(cl, telemUrl(nodeToks[nodeIdx]));
   http.addHeader("Content-Type", "application/json");
   int code = http.POST((uint8_t*)payload, len);
   http.end();
