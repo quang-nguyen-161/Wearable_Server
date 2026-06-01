@@ -320,18 +320,18 @@ static String extractDeviceId(const String& json, const String& name) {
   int namePos = json.indexOf("\"name\":\"" + name + "\"");
   if (namePos < 0) return "";
 
-  // "entityType":"DEVICE" appears in the device's own top-level "id" object.
-  // It should be within ~400 chars of the name field.
+  // TB serializes the id object as {"entityType":"DEVICE","id":"UUID"}
+  // so entityType comes BEFORE the actual UUID value.
+  // Search backward from namePos for the nearest "entityType":"DEVICE".
   int etPos = json.lastIndexOf("\"entityType\":\"DEVICE\"", namePos);
-  if (etPos < 0 || (namePos - etPos) > 400) {
-    // Try forward — in case name precedes id in the serialization
+  if (etPos < 0 || (namePos - etPos) > 600) {
     etPos = json.indexOf("\"entityType\":\"DEVICE\"", namePos);
-    if (etPos < 0 || (etPos - namePos) > 400) return "";
+    if (etPos < 0 || (etPos - namePos) > 600) return "";
   }
 
-  // The UUID sits in "id":"UUID" just before "entityType"
-  int idPos = json.lastIndexOf("\"id\":\"", etPos);
-  if (idPos < 0 || (etPos - idPos) > 60) return "";
+  // UUID is in "id":"UUID" AFTER "entityType":"DEVICE" (within ~50 chars)
+  int idPos = json.indexOf("\"id\":\"", etPos);
+  if (idPos < 0 || (idPos - etPos) > 60) return "";
   idPos += 6;
   String uuid = json.substring(idPos, json.indexOf("\"", idPos));
   return (uuid.length() >= 32) ? uuid : "";
@@ -374,10 +374,6 @@ static void syncNodes() {
   String resp;
   int code = tbGet("/api/tenant/devices?pageSize=100&page=0", resp);
   if (code != 200) { Serial.printf("[Sync] devices fetch %d\n", code); return; }
-
-  // DEBUG: print first 400 chars so we can see the exact JSON format
-  Serial.println("[Sync] resp[0..400]:");
-  Serial.println(resp.substring(0, 400));
 
   // Collect TB device names that contain "node"
   String tbNames[MAX_NODES];
