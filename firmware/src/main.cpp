@@ -512,24 +512,18 @@ static void onSampleTimer(void*) {
 // ── Publish waveform for all nodes ───────────────────────────────────────────
 
 static void publishWaveform() {
-  unsigned long long batchTs = readyTs > 0 ? readyTs : epochMs();
-  uint32_t           baseIdx = readySampleCount - BATCH_SIZE;
+  uint32_t baseIdx = readySampleCount - BATCH_SIZE;
 
   for (int n = 0; n < nodeCount; n++) {
-    if (nodeToks[n][0] == '\0') continue;  // token invalid — skip until re-resolved
+    if (nodeToks[n][0] == '\0') continue;
 
     int phaseOff = n * 67;
     int pos = 0;
-    pos += snprintf(payload + pos, PAYLOAD_BUF_SIZE - pos, "[");
-    for (int i = 0; i < BATCH_SIZE; i++) {
-      unsigned long long ts =
-        batchTs - (unsigned long long)(BATCH_SIZE - 1 - i) * SAMPLE_INTERVAL_MS;
+    pos += snprintf(payload + pos, PAYLOAD_BUF_SIZE - pos, "{\"ecg_batch\":\"[");
+    for (int i = 0; i < BATCH_SIZE; i++)
       pos += snprintf(payload + pos, PAYLOAD_BUF_SIZE - pos,
-        "%s{\"ts\":%llu,\"values\":{\"ecg\":%d}}",
-        i > 0 ? "," : "", ts,
-        ecgAt(baseIdx + i, phaseOff));
-    }
-    pos += snprintf(payload + pos, PAYLOAD_BUF_SIZE - pos, "]");
+        "%s%d", i > 0 ? "," : "", ecgAt(baseIdx + i, phaseOff));
+    pos += snprintf(payload + pos, PAYLOAD_BUF_SIZE - pos, "]\"}");
     postToNode(n, pos);
     Serial.printf("[%s] wave %d bytes\n", nodeNames[n].c_str(), pos);
   }
