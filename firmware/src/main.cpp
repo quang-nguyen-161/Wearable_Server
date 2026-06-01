@@ -77,6 +77,7 @@ struct NodePostArgs {
   int  len;
 };
 static volatile bool nodePost401[MAX_NODES];
+static volatile int  activePostTasks = 0;
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -483,6 +484,7 @@ static void nodePostTask(void* arg) {
   http.end();
   if (code == 401) nodePost401[p->nodeIdx] = true;
   free(p);
+  activePostTasks--;
   vTaskDelete(NULL);
 }
 
@@ -548,6 +550,11 @@ static void onSampleTimer(void*) {
 // ── Publish waveform for all nodes ───────────────────────────────────────────
 
 static void publishWaveform() {
+  if (activePostTasks > 0) {
+    Serial.printf("[wave] skip — %d task(s) still active\n", (int)activePostTasks);
+    return;
+  }
+
   uint32_t baseIdx = readySampleCount - BATCH_SIZE;
 
   for (int n = 0; n < nodeCount; n++) {
@@ -571,6 +578,7 @@ static void publishWaveform() {
         "%s%d", i > 0 ? "," : "", ppgAt(baseIdx + i, phaseOff));
     p->len += snprintf(p->buf + p->len, sizeof(p->buf) - p->len, "]}");
 
+    activePostTasks++;
     xTaskCreate(nodePostTask, "nodePost", 10240, p, 1, NULL);
     Serial.printf("[%s] wave %d bytes (async)\n", nodeNames[n].c_str(), p->len);
   }
