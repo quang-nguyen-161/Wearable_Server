@@ -19,6 +19,7 @@
 #include <WiFi.h>
 #include <WiFiClientSecure.h>
 #include <HTTPClient.h>
+#include <PubSubClient.h>
 #include <WebServer.h>
 #include <DNSServer.h>
 #include <Preferences.h>
@@ -57,6 +58,11 @@ static int    nodeCount = 0;
 
 static String adminJwt = "";
 static Preferences prefs;
+
+// ── MQTT clients (one per node) ───────────────────────────────────────────────
+
+static WiFiClient   mqttNet[MAX_NODES];
+static PubSubClient mqttClients[MAX_NODES];
 
 // ── Buffers ───────────────────────────────────────────────────────────────────
 
@@ -398,6 +404,7 @@ static void syncNodes() {
     }
     if (!found) {
       Serial.printf("[Sync] removed: %s\n", nodeNames[i].c_str());
+      mqttClients[i].disconnect();
       for (int k = i; k < nodeCount - 1; k++) {
         nodeNames[k] = nodeNames[k + 1];
         memcpy(nodeToks[k], nodeToks[k + 1], 64);
@@ -418,6 +425,7 @@ static void syncNodes() {
       if (resolveNodeToken(tbNames[i], resp, tok)) {
         nodeNames[nodeCount] = tbNames[i];
         memcpy(nodeToks[nodeCount], tok, 64);
+        mqttConnect(nodeCount);
         nodeCount++;
         changed = true;
         Serial.printf("[Sync] added: %s\n", tbNames[i].c_str());
@@ -458,25 +466,25 @@ static void setupWiFi() {
   Serial.println(" (skipped)");
 }
 
-// ── POST telemetry to a specific node token ───────────────────────────────────
+// ── MQTT connect / ensure ─────────────────────────────────────────────────────
 
-static void postToNode(int nodeIdx, int len) {
-  WiFiClientSecure cl; cl.setInsecure();
-  HTTPClient http;
-  http.begin(cl, tbUrl("/api/v1/" + String(nodeToks[nodeIdx]) + "/telemetry"));
-  http.addHeader("Content-Type", "application/json");
-  int code = http.POST((uint8_t*)payload, len);
-  http.end();
-  if (code == 401) {
-    Serial.printf("[TB] 401 for %s — will re-resolve on next sync\n", nodeNames[nodeIdx].c_str());
-    // Clear token so syncNodes() re-resolves it
-    nodeToks[nodeIdx][0] = '\0';
-    saveNodesToNVS();
-  } else if (code > 0 && code >= 300) {
-    Serial.printf("[TB] %s → %d\n", nodeNames[nodeIdx].c_str(), code);
-  } else if (code < 0) {
-    Serial.printf("[TB] %s error: %s\n", nodeNames[nodeIdx].c_str(), HTTPClient::errorToString(code).c_str());
+static bool mqttConnect(int n) {
+  mqttClients[n].setClient(mqttNet[n]);
+  mqttClients[n].setServer(TB_HOST, 1883);
+  mqttClients[n].setBufferSize(1024);
+  char clientId[32];
+  snprintf(clientId, sizeof(clientId), "esp32_n%d_%lu", n, millis());
+  if (mqttClients[n].connect(clientId, nodeToks[n], "")) {
+    Serial.printf("[MQTT] %s connected\n", nodeNames[n].c_str());
+    return true;
   }
+  Serial.printf("[MQTT] %s failed state=%d\n", nodeNames[n].c_str(), mqttClients[n].state());
+  return false;
+}
+
+static bool mqttEnsure(int n) {
+  if (mqttClients[n].connected()) return true;
+  return mqttConnect(n);
 }
 
 // ── Demo signal generators (phase-offset per node) ───────────────────────────
@@ -524,6 +532,7 @@ static void publishWaveform() {
 
   for (int n = 0; n < nodeCount; n++) {
     if (nodeToks[n][0] == '\0') continue;
+    if (!mqttEnsure(n)) continue;
 
     int phaseOff = n * 67;
     int pos = 0;
@@ -536,8 +545,9 @@ static void publishWaveform() {
       pos += snprintf(payload + pos, PAYLOAD_BUF_SIZE - pos,
         "%s%d", i > 0 ? "," : "", ppgAt(baseIdx + i, phaseOff));
     pos += snprintf(payload + pos, PAYLOAD_BUF_SIZE - pos, "]}");
-    postToNode(n, pos);
-    Serial.printf("[%s] wave %d bytes\n", nodeNames[n].c_str(), pos);
+
+    bool ok = mqttClients[n].publish("v1/devices/me/telemetry", (uint8_t*)payload, pos, false);
+    Serial.printf("[%s] wave %d bytes %s\n", nodeNames[n].c_str(), pos, ok ? "OK" : "FAIL");
   }
 }
 
@@ -546,7 +556,7 @@ static void publishWaveform() {
 static void publishVitals() {
   for (int n = 0; n < nodeCount; n++) {
     if (nodeToks[n][0] == '\0') continue;
-    // Slight per-node variation in vitals
+    if (!mqttEnsure(n)) continue;
     float ecgHr = 72.0f + n * 3.0f;
     float ppgHr = 71.0f + n * 3.0f;
     float spo2  = 98.5f - n * 0.3f;
@@ -554,7 +564,7 @@ static void publishVitals() {
     int pos = snprintf(payload, PAYLOAD_BUF_SIZE,
       "{\"ecgHeartRate\":%.1f,\"ppgHeartRate\":%.1f,\"spo2\":%.1f,\"temperature\":%.1f}",
       ecgHr, ppgHr, spo2, temp);
-    postToNode(n, pos);
+    mqttClients[n].publish("v1/devices/me/telemetry", (uint8_t*)payload, pos, false);
     Serial.printf("[%s] vitals ECG-HR:%.1f SpO2:%.1f\n", nodeNames[n].c_str(), ecgHr, spo2);
   }
 }
@@ -577,6 +587,11 @@ void setup() {
   Serial.println("[Setup] Initial node sync...");
   syncNodes();
   lastNodeSyncMs = millis();
+
+  // Connect MQTT for nodes loaded from NVS (not newly discovered)
+  for (int n = 0; n < nodeCount; n++) {
+    if (nodeToks[n][0] != '\0') mqttConnect(n);
+  }
 
   esp_timer_create_args_t args = {};
   args.callback = onSampleTimer;
@@ -604,5 +619,9 @@ void loop() {
   if (nowMs - lastNodeSyncMs >= NODE_SYNC_INTERVAL_MS) {
     lastNodeSyncMs = nowMs;
     syncNodes();
+  }
+
+  for (int n = 0; n < nodeCount; n++) {
+    if (nodeToks[n][0] != '\0') mqttClients[n].loop();
   }
 }
