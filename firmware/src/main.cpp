@@ -61,9 +61,9 @@ static Preferences prefs;
 
 // ── MQTT clients (one per node) ───────────────────────────────────────────────
 
-static WiFiClient   mqttNet[MAX_NODES];
-static PubSubClient mqttClients[MAX_NODES];
-static bool         mqttReady[MAX_NODES] = {};
+static WiFiClientSecure mqttNet[MAX_NODES];
+static PubSubClient     mqttClients[MAX_NODES];
+static bool             mqttReady[MAX_NODES] = {};
 
 // ── Buffers ───────────────────────────────────────────────────────────────────
 
@@ -475,8 +475,9 @@ static void setupWiFi() {
 // ── MQTT connect / ensure ─────────────────────────────────────────────────────
 
 static bool mqttConnect(int n) {
+  mqttNet[n].setInsecure();
   mqttClients[n].setClient(mqttNet[n]);
-  mqttClients[n].setServer(TB_HOST, 1883);
+  mqttClients[n].setServer(TB_HOST, 8883);
   mqttClients[n].setBufferSize(1024);
   char clientId[32];
   snprintf(clientId, sizeof(clientId), "esp32_n%d_%lu", n, millis());
