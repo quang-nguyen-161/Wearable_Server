@@ -31,10 +31,10 @@
 const char* TB_HOST   = "c7.hust-2slab.org";
 const bool  USE_HTTPS = true;
 
-#define SAMPLE_RATE_HZ       250
+#define SAMPLE_RATE_HZ       50
 #define SAMPLE_INTERVAL_US   (1000000 / SAMPLE_RATE_HZ)
 #define SAMPLE_INTERVAL_MS   (1000 / SAMPLE_RATE_HZ)
-#define BATCH_SIZE           250
+#define BATCH_SIZE           50
 #define VITAL_INTERVAL_MS    15000
 #define NODE_SYNC_INTERVAL_MS 10000
 #define PAYLOAD_BUF_SIZE     20480
@@ -520,25 +520,22 @@ static void onSampleTimer(void*) {
 // ── Publish waveform for all nodes ───────────────────────────────────────────
 
 static void publishWaveform() {
-  unsigned long long batchTs = readyTs > 0 ? readyTs : epochMs();
-  uint32_t           baseIdx = readySampleCount - BATCH_SIZE;
+  uint32_t baseIdx = readySampleCount - BATCH_SIZE;
 
   for (int n = 0; n < nodeCount; n++) {
-    if (nodeToks[n][0] == '\0') continue;  // token invalid — skip until re-resolved
+    if (nodeToks[n][0] == '\0') continue;
 
     int phaseOff = n * 67;
     int pos = 0;
-    pos += snprintf(payload + pos, PAYLOAD_BUF_SIZE - pos, "[");
-    for (int i = 0; i < BATCH_SIZE; i++) {
-      unsigned long long ts =
-        batchTs - (unsigned long long)(BATCH_SIZE - 1 - i) * SAMPLE_INTERVAL_MS;
+    pos += snprintf(payload + pos, PAYLOAD_BUF_SIZE - pos, "{\"ecg\":[");
+    for (int i = 0; i < BATCH_SIZE; i++)
       pos += snprintf(payload + pos, PAYLOAD_BUF_SIZE - pos,
-        "%s{\"ts\":%llu,\"values\":{\"ecg\":%d,\"ppg\":%d}}",
-        i > 0 ? "," : "", ts,
-        ecgAt(baseIdx + i, phaseOff),
-        ppgAt(baseIdx + i, phaseOff));
-    }
-    pos += snprintf(payload + pos, PAYLOAD_BUF_SIZE - pos, "]");
+        "%s%d", i > 0 ? "," : "", ecgAt(baseIdx + i, phaseOff));
+    pos += snprintf(payload + pos, PAYLOAD_BUF_SIZE - pos, "],\"ppg\":[");
+    for (int i = 0; i < BATCH_SIZE; i++)
+      pos += snprintf(payload + pos, PAYLOAD_BUF_SIZE - pos,
+        "%s%d", i > 0 ? "," : "", ppgAt(baseIdx + i, phaseOff));
+    pos += snprintf(payload + pos, PAYLOAD_BUF_SIZE - pos, "]}");
     postToNode(n, pos);
     Serial.printf("[%s] wave %d bytes\n", nodeNames[n].c_str(), pos);
   }
@@ -547,7 +544,6 @@ static void publishWaveform() {
 // ── Publish vitals for all nodes ──────────────────────────────────────────────
 
 static void publishVitals() {
-  unsigned long long ts = epochMs();
   for (int n = 0; n < nodeCount; n++) {
     if (nodeToks[n][0] == '\0') continue;
     // Slight per-node variation in vitals
@@ -555,18 +551,9 @@ static void publishVitals() {
     float ppgHr = 71.0f + n * 3.0f;
     float spo2  = 98.5f - n * 0.3f;
     float temp  = 36.6f + n * 0.1f;
-    int pos;
-    if (ts > 0) {
-      pos = snprintf(payload, PAYLOAD_BUF_SIZE,
-        "[{\"ts\":%llu,\"values\":"
-        "{\"ecgHeartRate\":%.1f,\"ppgHeartRate\":%.1f,\"spo2\":%.1f,\"temperature\":%.1f}}]",
-        ts, ecgHr, ppgHr, spo2, temp);
-    } else {
-      pos = snprintf(payload, PAYLOAD_BUF_SIZE,
-        "[{\"values\":"
-        "{\"ecgHeartRate\":%.1f,\"ppgHeartRate\":%.1f,\"spo2\":%.1f,\"temperature\":%.1f}}]",
-        ecgHr, ppgHr, spo2, temp);
-    }
+    int pos = snprintf(payload, PAYLOAD_BUF_SIZE,
+      "{\"ecgHeartRate\":%.1f,\"ppgHeartRate\":%.1f,\"spo2\":%.1f,\"temperature\":%.1f}",
+      ecgHr, ppgHr, spo2, temp);
     postToNode(n, pos);
     Serial.printf("[%s] vitals ECG-HR:%.1f SpO2:%.1f\n", nodeNames[n].c_str(), ecgHr, spo2);
   }
