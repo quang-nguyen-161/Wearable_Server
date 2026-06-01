@@ -7,13 +7,11 @@ sensor data from **ThingsBoard Cloud**. Designed for Vercel deployment.
 
 ## Features
 
-- **Real-time vitals**: PPG Heart Rate, ECG Heart Rate, SpO₂, Temperature
-- **Live ECG waveform** chart with WebSocket streaming
-- **Multi-node overview** with per-node alert status
-- **Patient info** per node, editable from the dashboard
-- **OTA firmware update** via BLE DFU chain
-- **Print / CSV export** with configurable time range
-- **Per-node settings**: alert thresholds, vital interval, ECG sample rate
+- **8 vital metrics**: Heart Rate, SpO₂, Temperature, Blood Pressure (Systolic/Diastolic), Respiratory Rate, Glucose, Steps
+- **Live auto-refresh** every 10 seconds
+- **Trend charts** with 1H / 6H / 24H history windows
+- **Alert detection**: cards glow red and show ALERT badge when values are critical
+- **Patient info** pulled from ThingsBoard device attributes
 - **Fully responsive** (mobile-friendly)
 
 ---

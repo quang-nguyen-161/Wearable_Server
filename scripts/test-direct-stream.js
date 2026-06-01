@@ -114,10 +114,11 @@ async function postTelemetry(deviceName, payload) {
     headers: { 'Content-Type': 'application/json' },
     body:    JSON.stringify(payload),
   });
+  const text = await res.text();
   if (!res.ok) {
-    const text = await res.text();
     console.error(`[${deviceName}] POST failed (${res.status}): ${text.slice(0, 120)}`);
   }
+  return { status: res.status, body: text };
 }
 
 // ── Waveform loop ─────────────────────────────────────────────────────────
@@ -131,7 +132,7 @@ function startWaveformLoop(node, delayMs) {
       sampleIdx[node.name] += BATCH_SIZE;
       count++;
 
-      await postTelemetry(node.name, { ecg: samples });
+      await postTelemetry(node.name, { ecg_batch: JSON.stringify(samples) });
 
       if (count % 10 === 0) {
         const t = new Date().toLocaleTimeString();
@@ -193,6 +194,13 @@ async function main() {
     process.exit(1);
   }
   console.log(`\n[Ready] Streaming for: ${resolved.join(', ')}\n`);
+
+  // ── Diagnostic: verify first POST reaches ThingsBoard ──
+  const firstNode = NODES.find(n => deviceTokens[n.name]);
+  if (firstNode) {
+    const r = await postTelemetry(firstNode.name, { _ping: 1 });
+    console.log(`[Diag] Test POST to ${firstNode.name} → HTTP ${r?.status}  body: "${r?.body?.slice(0, 80)}"`);
+  }
 
   // Immediate first vital push
   await publishVitals();

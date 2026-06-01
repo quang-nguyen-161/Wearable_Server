@@ -43,7 +43,7 @@ export default function PrintModal({ devices, onClose }) {
   const [patient,   setPatient]   = useState(null);
   const [startTs,   setStartTs]   = useState(Date.now() - 3600_000);
   const [endTs,     setEndTs]     = useState(Date.now());
-  const [include,   setInclude]   = useState({ ppgHeartRate:true, ecgHeartRate:true, spo2:true, temperature:true, ecg:true });
+  const [include,   setInclude]   = useState({ ppgHeartRate:true, ecgHeartRate:true, spo2:true, temperature:true, ecg:true, ppg:false });
   const [data,      setData]      = useState({});   // { ppgHeartRate: [{ts,value}], ... }
   const [loading,   setLoading]   = useState(false);
   const [csvLoading,setCsvLoading]= useState(false);
@@ -248,6 +248,7 @@ export default function PrintModal({ devices, onClose }) {
                   { key:"spo2",         label:"SpO₂",           icon:"💧" },
                   { key:"temperature",  label:"Temperature",    icon:"🌡" },
                   { key:"ecg",          label:"ECG Signal",     icon:"〜" },
+                  { key:"ppg",          label:"PPG Signal",     icon:"〜" },
                 ].map(({ key, label, icon }) => (
                   <button key={key} onClick={() => { setInclude(prev => ({...prev, [key]:!prev[key]})); setFetched(false); }} style={{
                     display:"flex", alignItems:"center", gap:6,
@@ -396,8 +397,8 @@ export default function PrintModal({ devices, onClose }) {
             </div>
           )}
 
-          {/* ECG summary */}
-          {data.ecg && (
+          {/* ECG / PPG summary */}
+          {(data.ecg || data.ppg) && (
             <div style={{ marginBottom:24 }}>
               <div style={{ fontSize:12, fontWeight:700, letterSpacing:"0.08em", color:"#64748b", marginBottom:10 }}>SIGNAL DATA SUMMARY</div>
               <table style={{ width:"100%", borderCollapse:"collapse", fontSize:12 }}>
@@ -410,7 +411,8 @@ export default function PrintModal({ devices, onClose }) {
                 </thead>
                 <tbody>
                   {[
-                    { key:"ecg", label:"ECG Signal", unit:"µV", color:"#FF96B7" },
+                    { key:"ecg", label:"ECG Signal", unit:"µV",    color:"#FF96B7" },
+                    { key:"ppg", label:"PPG Signal", unit:"a.u.",  color:"#70AD47" },
                   ].map(({ key, label, unit, color }) => {
                     const series = data[key];
                     if (!series) return null;

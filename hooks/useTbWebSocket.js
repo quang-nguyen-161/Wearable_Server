@@ -23,11 +23,13 @@ export function useTbWebSocket(deviceId, tbToken, ecgSampleFreq = 250) {
 
   // Pending buffers — accumulate between flushes, never trigger renders directly
   const pendingEcg      = useRef([]);
+  const pendingPpg      = useRef([]);
   const pendingVitals   = useRef({});
   const lastBatchTsRef  = useRef(null); // updated when any ECG data arrives
 
   const [vitals,      setVitals]      = useState({});
   const [ecgData,     setEcgData]     = useState([]);
+  const [ppgData,     setPpgData]     = useState([]);
   const [lastBatchTs, setLastBatchTs] = useState(null);
   const [connected,   setConnected]   = useState(false);
   const [lastUpdate,  setLastUpdate]  = useState(null);
@@ -49,6 +51,16 @@ export function useTbWebSocket(deviceId, tbToken, ecgSampleFreq = 250) {
         const pts = pendingEcg.current.splice(0).sort((a, b) => a.ts - b.ts);
         const cap = maxPointsRef.current;
         setEcgData(prev => {
+          const next = [...prev, ...pts];
+          return next.length > cap ? next.slice(-cap) : next;
+        });
+      }
+
+      // PPG
+      if (pendingPpg.current.length > 0) {
+        const pts = pendingPpg.current.splice(0).sort((a, b) => a.ts - b.ts);
+        const cap = maxPointsRef.current;
+        setPpgData(prev => {
           const next = [...prev, ...pts];
           return next.length > cap ? next.slice(-cap) : next;
         });
@@ -90,18 +102,25 @@ export function useTbWebSocket(deviceId, tbToken, ecgSampleFreq = 250) {
         }
       }
 
-      // ECG — individual timestamped points posted directly from firmware
+      // ECG / PPG — individual timestamped points posted directly from firmware
       const ecgPts = data["ecg"] || [];
+      const ppgPts = data["ppg"] || [];
       for (const [ts, val] of ecgPts) pendingEcg.current.push({ ts, value: parseFloat(val) });
-      if (ecgPts.length > 0) lastBatchTsRef.current = Date.now();
+      for (const [ts, val] of ppgPts) pendingPpg.current.push({ ts, value: parseFloat(val) });
+      if (ecgPts.length > 0 || ppgPts.length > 0) lastBatchTsRef.current = Date.now();
 
-      // ecg_batch — JSON-string array from HTTPS POST
+      // ecg_batch / ppg_batch — JSON-string arrays from HTTPS POST
+      // parseWaveformBatch reconstructs per-sample timestamps: last sample = batchTs, step 10ms back
       const ecgEntry = data["ecg_batch"]?.[0];
-      if (ecgEntry) {
+      const ppgEntry = data["ppg_batch"]?.[0];
+      if (ecgEntry || ppgEntry) {
         const batchTs    = ecgEntry?.[0] ?? Date.now();
         const ecgRaw     = ecgEntry?.[1] ?? ecgEntry?.value;
+        const ppgRaw     = ppgEntry?.[1] ?? ppgEntry?.value;
         const ecgSamples = parseWaveformBatch(ecgRaw, batchTs, sampleIntervalMsRef.current);
+        const ppgSamples = parseWaveformBatch(ppgRaw, batchTs, sampleIntervalMsRef.current);
         for (const pt of ecgSamples) pendingEcg.current.push(pt);
+        for (const pt of ppgSamples) pendingPpg.current.push(pt);
         lastBatchTsRef.current = Date.now();
       }
 
@@ -122,8 +141,10 @@ export function useTbWebSocket(deviceId, tbToken, ecgSampleFreq = 250) {
     // Reset all state and buffers
     setVitals({});
     setEcgData([]);
+    setPpgData([]);
     setLastBatchTs(null);
     pendingEcg.current    = [];
+    pendingPpg.current    = [];
     pendingVitals.current = {};
     lastBatchTsRef.current = null;
 
@@ -166,5 +187,5 @@ export function useTbWebSocket(deviceId, tbToken, ecgSampleFreq = 250) {
     };
   }, [deviceId, tbToken, handleMessage, startFlushLoop, stopFlushLoop]);
 
-  return { vitals, ecgData, lastBatchTs, connected, lastUpdate };
+  return { vitals, ecgData, ppgData, lastBatchTs, connected, lastUpdate };
 }

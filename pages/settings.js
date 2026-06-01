@@ -28,9 +28,9 @@ const VITAL_LABELS = {
   temperature:  { label: "TEMPERATURE",    unit: "°C"  },
 };
 
-const DEFAULT_VITAL_INTERVAL    = 1000;  // ms — how often vitals are reported
-const DEFAULT_ECG_SAMPLE_FREQ   = 250;   // Hz — ADC sampling rate
-const DEFAULT_ECG_PACKET_INTERVAL = 500; // ms — how often ECG packets are sent
+const DEFAULT_VITAL_INTERVAL    = 1000; // ms — how often vitals are reported
+const DEFAULT_ECG_SAMPLE_FREQ   = 250;  // Hz — ADC sampling rate
+const DEFAULT_ECG_PACKET_INTERVAL = 20; // ms — how often ECG packets are sent
 
 // ── Settings page ────────────────────────────────────────────────────────────
 export default function Settings() {
@@ -318,15 +318,15 @@ export default function Settings() {
             <div className="interval-row">
               <input
                 type="range"
-                min={1000} max={30000} step={1000}
+                min={100} max={5000} step={100}
                 value={vitalInterval}
                 onChange={e => setVitalInterval(Number(e.target.value))}
                 className="interval-slider"
               />
-              <span className="interval-value">{vitalInterval >= 1000 ? `${vitalInterval/1000}s` : `${vitalInterval}ms`}</span>
+              <span className="interval-value">{vitalInterval} ms</span>
             </div>
             <div className="interval-presets">
-              {[1000, 2000, 5000, 10000, 15000, 30000].map(ms => (
+              {[100, 250, 500, 1000, 2000, 5000].map(ms => (
                 <button
                   key={ms}
                   className={`preset-btn ${vitalInterval === ms ? "preset-btn--active" : ""}`}
@@ -376,21 +376,21 @@ export default function Settings() {
               <div className="interval-row">
                 <input
                   type="range"
-                  min={50} max={2000} step={50}
+                  min={10} max={500} step={10}
                   value={ecgPacketInterval}
                   onChange={e => setEcgPacketInterval(Number(e.target.value))}
                   className="interval-slider"
                 />
-                <span className="interval-value">{ecgPacketInterval >= 1000 ? `${ecgPacketInterval/1000}s` : `${ecgPacketInterval}ms`}</span>
+                <span className="interval-value">{ecgPacketInterval} ms</span>
               </div>
               <div className="interval-presets">
-                {[50, 100, 200, 500, 1000, 2000].map(ms => (
+                {[10, 20, 50, 100, 200, 500].map(ms => (
                   <button
                     key={ms}
                     className={`preset-btn ${ecgPacketInterval === ms ? "preset-btn--active" : ""}`}
                     onClick={() => setEcgPacketInterval(ms)}
                   >
-                    {ms < 1000 ? `${ms}ms` : `${ms/1000}s`}
+                    {ms}ms
                   </button>
                 ))}
               </div>

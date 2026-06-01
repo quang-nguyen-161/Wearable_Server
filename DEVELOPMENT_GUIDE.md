@@ -31,7 +31,7 @@ The HealthMonitor is a **Next.js React application** that displays real-time hea
 
 **Key Features:**
 - Real-time vital sign monitoring (Heart Rate, SpO₂, Temperature)
-- ECG signal visualization
+- ECG and PPG signal visualization
 - Multi-node overview grid with per-node alert status
 - OTA firmware update (Dashboard → ThingsBoard RPC → ESP32 → UART → nRF52 Central → BLE DFU → node)
 - Browser push notifications + audio alarm for critical vitals
@@ -62,7 +62,7 @@ health-monitor/
 │       └── telemetry/
 │           ├── latest.js        # Latest vitals endpoint
 │           ├── history.js       # Historical data endpoint
-│           └── latest.js        # GET latest vital values
+│           └── ingest.js        # Receives ESP32 batches → TB admin API
 │
 ├── components/
 │   ├── VitalCard.js             # Individual vital display card
@@ -107,17 +107,17 @@ health-monitor/
 
 ## Streaming Pipeline
 
-The dashboard receives ECG waveforms and vitals from ESP32 hardware via a
+The dashboard receives ECG/PPG waveforms and vitals from ESP32 hardware via a
 dual-protocol pipeline. For full setup, tuning, and parameter reference see
 **[STREAMING_INSTRUCTION.md](STREAMING_INSTRUCTION.md)**.
 
 **Quick summary:**
-- ECG → ESP32 unbatches samples with per-sample timestamps, posts directly to ThingsBoard device API
+- ECG/PPG → ESP32 samples at 100Hz, batches 50 samples, HTTPS POSTs to `/api/telemetry/ingest` every 500ms
 - Vitals → ESP32 publishes `{ ecgHeartRate, ppgHeartRate, spo2, temperature }` via MQTT gateway every 15s
 - Ingest handler decodes each batch into per-sample time-series and writes to ThingsBoard admin API
 - Dashboard receives data via ThingsBoard WebSocket (`useTbWebSocket`) and REST poll (`/api/telemetry/latest`)
 
-**To change sample rate or send interval** — see [STREAMING_INSTRUCTION.md](STREAMING_INSTRUCTION.md). Changes require updating `firmware/src/main.cpp` and `scripts/test-mqtt-stream.js` in sync.
+**To change sample rate, batch size, or send interval** — see [Part 7 of STREAMING_INSTRUCTION.md](STREAMING_INSTRUCTION.md#part-7--tuning-parameters). Changes always require updating three files in sync: `firmware/src/main.cpp`, `scripts/test-http-stream.js`, and `pages/api/telemetry/ingest.js`.
 
 **To test the pipeline locally:**
 ```bash
@@ -628,7 +628,7 @@ const { key = "ppgHeartRate", hours = "1" } = req.query;
 
 ### S - Signals & Charts
 
-**ECG Signal Visualization**
+**ECG & PPG Signal Visualization**
 
 **Location:** `pages/index.js` lines 251-270
 
@@ -636,6 +636,7 @@ const { key = "ppgHeartRate", hours = "1" } = req.query;
 ```javascript
 const fetchSignals = useCallback(async () => {
   const ecgRes = await fetch(`/api/telemetry/history?key=ecg&hours=1`);
+  const ppgRes = await fetch(`/api/telemetry/history?key=ppg&hours=1`);
   // ... process results
 }, []);
 ```
@@ -1021,7 +1022,10 @@ useEffect(() => {
 
 ```javascript
 // In fetchSignals:
-const ecgRes = await fetch(`/api/telemetry/history?key=ecg&hours=24`);  // ← Change hours
+const [ecgRes, ppgRes] = await Promise.all([
+  fetch(`/api/telemetry/history?key=ecg&hours=24`),  // ← Change hours
+  fetch(`/api/telemetry/history?key=ppg&hours=24`),
+]);
 ```
 
 ### Modify Card Layout
@@ -1138,7 +1142,7 @@ Opens via the **Print** button in the header. Lets the user:
 
 1. Select a patient/node
 2. Choose a preset time range (1 hr / 6 hr / 24 hr / 3 days / 7 days) or set a custom range
-3. Toggle which signals to include (Heart Rate, SpO₂, Temperature, ECG)
+3. Toggle which signals to include (Heart Rate, SpO₂, Temperature, ECG, PPG)
 4. **Fetch Data** — pulls up to 5 000 points per key from `/api/telemetry/history`
 5. **CSV** — calls `lib/exportCsv.js` and triggers a browser download; no page print needed
 6. **Print** — hides everything except `#print-report` via `@media print` CSS and calls `window.print()`

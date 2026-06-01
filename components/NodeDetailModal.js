@@ -37,14 +37,20 @@ function getStatusColor(status) {
 export default function NodeDetailModal({ device, vitals, onClose }) {
   const [rangeIdx,      setRangeIdx]      = useState(1); // default 1 hour
   const [ecgHistory,    setEcgHistory]    = useState([]);
+  const [ppgHistory,    setPpgHistory]    = useState([]);
   const [historyLoading, setHistoryLoading] = useState(false);
+  const [activeTab,     setActiveTab]     = useState("ecg");
 
   const fetchHistory = useCallback(async (hours) => {
     if (!device?.id) return;
     setHistoryLoading(true);
     try {
-      const ecgRes = await fetch(`/api/telemetry/history?deviceId=${device.id}&key=ecg&hours=${hours}&limit=2000`);
+      const [ecgRes, ppgRes] = await Promise.all([
+        fetch(`/api/telemetry/history?deviceId=${device.id}&key=ecg&hours=${hours}&limit=2000`),
+        fetch(`/api/telemetry/history?deviceId=${device.id}&key=ppg&hours=${hours}&limit=2000`),
+      ]);
       if (ecgRes.ok) setEcgHistory((await ecgRes.json()).series || []);
+      if (ppgRes.ok) setPpgHistory((await ppgRes.json()).series || []);
     } catch (e) {
       console.error("History fetch error:", e);
     } finally {
@@ -122,15 +128,26 @@ export default function NodeDetailModal({ device, vitals, onClose }) {
 
         {/* ── Signal tabs ── */}
         <div className="modal-signal-tabs">
-          <button className="signal-tab signal-tab--active">ECG Signal</button>
+          <button
+            className={`signal-tab ${activeTab === "ecg" ? "signal-tab--active" : ""}`}
+            onClick={() => setActiveTab("ecg")}
+          >
+            ECG Signal
+          </button>
+          <button
+            className={`signal-tab ${activeTab === "ppg" ? "signal-tab--active" : ""}`}
+            onClick={() => setActiveTab("ppg")}
+          >
+            PPG Signal
+          </button>
           <span className="signal-range-label">{TIME_RANGES[rangeIdx].label} history</span>
         </div>
 
         {/* ── Chart ── */}
         <div className="modal-chart">
           <TrendChart
-            series={ecgHistory}
-            metricKey="ecg"
+            series={activeTab === "ecg" ? ecgHistory : ppgHistory}
+            metricKey={activeTab}
             loading={historyLoading}
           />
         </div>
