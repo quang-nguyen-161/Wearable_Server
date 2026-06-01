@@ -96,36 +96,21 @@ React re-render thrashing on high-frequency ECG data.
 
 ## 3. ECG Waveform Flow
 
-### Firmware → ThingsBoard
+### Firmware → ThingsBoard (direct)
 
 ```
 ESP32 (every ecgPacketInterval ms)
   │
-  │  POST https://wearable-server.vercel.app/api/telemetry/ingest
-  │  Body: {
-  │    deviceName: "Node1",
-  │    ts: 1234567890,
-  │    ecg_batch: "[2048, 2391, 1876, ...]"   ← JSON string, N samples
-  │  }
-  │
-  ▼
-pages/api/telemetry/ingest.js  (Next.js serverless — runs on Vercel)
-  │
-  │  1. Resolve device by name (auto-creates if new)
-  │  2. Reconstruct per-sample timestamps:
-  │       sampleTs = batchTs - (N-1-i) × (1000 / ecgSampleFreq) ms
-  │  3. POST chunks of ≤50 points to TB device API:
-  │       POST /api/v1/{deviceToken}/telemetry
-  │       Body: [{ ts, values: { ecg } }, ...]
+  │  Firmware unbatches samples and assigns per-sample timestamps
+  │  Posts directly to ThingsBoard device API:
+  │    POST /api/v1/{deviceToken}/telemetry
+  │    Body: [{ ts: sampleTs, values: { ecg: value } }, ...]
   │
   ▼
 ThingsBoard stores ecg as individual time-series points
   │
   ▼
-WebSocket pushes ecg_batch to dashboard
-  │
-  ▼
-parseWaveformBatch() reconstructs timestamps client-side
+WebSocket pushes latest ecg values to dashboard
   │
   ▼
 TrendChart (isLiveWaveform) renders scrolling ECG waveform
@@ -151,17 +136,8 @@ interval = 1000 / ecgSampleFreq  (ms per sample)
 ```
 ESP32 (every vitalInterval ms)
   │
-  │  POST /api/telemetry/ingest
-  │  Body: {
-  │    deviceName:   "Node1",
-  │    ecgHeartRate: 72.5,
-  │    ppgHeartRate: 71.0,
-  │    spo2:         98.2,
-  │    temperature:  36.6
-  │  }
-  │
-  ▼
-ingest.js → POST to TB device API as single telemetry entry
+  │  POST /api/v1/{deviceToken}/telemetry  (direct to ThingsBoard)
+  │  Body: { ecgHeartRate: 72.5, ppgHeartRate: 71.0, spo2: 98.2, temperature: 36.6 }
   │
   ▼
 ThingsBoard stores as LATEST_TELEMETRY
@@ -169,9 +145,6 @@ ThingsBoard stores as LATEST_TELEMETRY
   ▼
 WebSocket delivers to dashboard → VitalCard renders with threshold colors
 ```
-
-**Legacy compatibility**: old firmware sending `heartRate` is mapped to
-`ppgHeartRate` transparently in `ingest.js`.
 
 ---
 
@@ -249,7 +222,7 @@ Display pattern everywhere in the UI:
 
 ## 8. Environment Variables
 
-### Server-side (Next.js API routes — used by ingest endpoint)
+### Server-side (Next.js API routes)
 
 | Variable | Purpose |
 |---|---|
@@ -257,7 +230,6 @@ Display pattern everywhere in the UI:
 | `TB_USERNAME` | Tenant admin username |
 | `TB_PASSWORD` | Tenant admin password |
 | `TB_DEVICE_ID` | Gateway device UUID |
-| `TB_GATEWAY_ACCESS_TOKEN` | Gateway access token (for ingest) |
 
 ### Client-side (browser — `NEXT_PUBLIC_*`, baked into build)
 
@@ -280,7 +252,6 @@ pages/
   index.js                  ← Main dashboard
   settings.js               ← Per-device threshold & firmware settings
   api/
-    telemetry/ingest.js     ← Receives firmware data, forwards to TB
     health.js               ← Diagnostic endpoint
 
 context/
@@ -289,7 +260,7 @@ context/
 
 lib/
   tbBrowserClient.js        ← Browser-side TB API calls (bypasses Cloudflare)
-  thingsboard.js            ← Server-side TB API calls (used by ingest only)
+  thingsboard.js            ← Server-side TB API calls (auth, telemetry, attributes)
 
 hooks/
   useTbWebSocket.js         ← WebSocket connection + 60fps flush loop
@@ -306,7 +277,7 @@ components/
   OtaModal.js               ← OTA firmware update via BLE DFU
 
 firmware/
-  src/main.cpp              ← ESP32: reads ECG/PPG, posts to ingest endpoint
+  src/main.cpp              ← ESP32: reads ECG, posts directly to ThingsBoard
 ```
 
 ---

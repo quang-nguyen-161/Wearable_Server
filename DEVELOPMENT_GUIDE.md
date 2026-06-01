@@ -62,7 +62,7 @@ health-monitor/
 │       └── telemetry/
 │           ├── latest.js        # Latest vitals endpoint
 │           ├── history.js       # Historical data endpoint
-│           └── ingest.js        # Receives ESP32 batches → TB admin API
+│           └── latest.js        # GET latest vital values
 │
 ├── components/
 │   ├── VitalCard.js             # Individual vital display card
@@ -112,12 +112,12 @@ dual-protocol pipeline. For full setup, tuning, and parameter reference see
 **[STREAMING_INSTRUCTION.md](STREAMING_INSTRUCTION.md)**.
 
 **Quick summary:**
-- ECG → ESP32 samples at 100Hz, batches 50 samples, HTTPS POSTs to `/api/telemetry/ingest` every 500ms
+- ECG → ESP32 unbatches samples with per-sample timestamps, posts directly to ThingsBoard device API
 - Vitals → ESP32 publishes `{ ecgHeartRate, ppgHeartRate, spo2, temperature }` via MQTT gateway every 15s
 - Ingest handler decodes each batch into per-sample time-series and writes to ThingsBoard admin API
 - Dashboard receives data via ThingsBoard WebSocket (`useTbWebSocket`) and REST poll (`/api/telemetry/latest`)
 
-**To change sample rate, batch size, or send interval** — see [Part 7 of STREAMING_INSTRUCTION.md](STREAMING_INSTRUCTION.md#part-7--tuning-parameters). Changes always require updating three files in sync: `firmware/src/main.cpp`, `scripts/test-http-stream.js`, and `pages/api/telemetry/ingest.js`.
+**To change sample rate or send interval** — see [STREAMING_INSTRUCTION.md](STREAMING_INSTRUCTION.md). Changes require updating `firmware/src/main.cpp` and `scripts/test-mqtt-stream.js` in sync.
 
 **To test the pipeline locally:**
 ```bash
