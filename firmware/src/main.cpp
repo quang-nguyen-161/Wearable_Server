@@ -34,7 +34,7 @@ const char* TB_HOST = "c7.hust-2slab.org";
 #define SAMPLE_RATE_HZ       250
 #define SAMPLE_INTERVAL_US   (1000000 / SAMPLE_RATE_HZ)
 #define SAMPLE_INTERVAL_MS   (1000 / SAMPLE_RATE_HZ)
-#define BATCH_SIZE           50
+#define BATCH_SIZE           10
 #define VITAL_INTERVAL_MS    15000
 #define NODE_SYNC_INTERVAL_MS 10000
 #define PAYLOAD_BUF_SIZE     4096
