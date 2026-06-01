@@ -634,7 +634,7 @@ void setup() {
   setupWiFi();
   loadNodesFromNVS();
 
-  xTaskCreatePinnedToCore(ecgPostTask, "ecg_post", 32768, nullptr, 1, &ecgTaskHandle, 0);
+  xTaskCreatePinnedToCore(ecgPostTask, "ecg_post", 32768, nullptr, 2, &ecgTaskHandle, 0);
 
   // Initial node sync (blocking — ensures we have tokens before starting timer)
   Serial.println("[Setup] Initial node sync...");
