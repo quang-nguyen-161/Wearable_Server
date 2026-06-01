@@ -1,10 +1,13 @@
 // ── HealthMonitor ESP32 Firmware ─────────────────────────────────────────────
 // Event-driven: esp_timer samples ADC at 250Hz into a working buffer.
 // When a batch is complete it swaps to a ready buffer and sets batchReady.
-// loop() posts the batch directly to ThingsBoard using the device's own token.
+// loop() posts via ThingsBoard Gateway API so data routes to the child node.
+//
+// Gateway telemetry format:  POST /api/v1/{gatewayToken}/telemetry
+//   {"NodeX": [{"ts": T, "values": {"ecg": v, "ppg": v}}, ...]}
 //
 // First boot: no config in NVS → starts "HealthMonitor-Setup" AP and serves
-//   a captive portal to collect WiFi SSID/password and TB device token.
+//   a captive portal to collect WiFi credentials, gateway token, and node name.
 //   After save the device restarts and connects normally.
 // ─────────────────────────────────────────────────────────────────────────────
 
@@ -34,9 +37,10 @@ const bool  USE_HTTPS = true;
 
 // ── Runtime config (loaded from NVS) ─────────────────────────────────────────
 
-static char wifiSsid[64]     = "";
-static char wifiPass[64]     = "";
-static char deviceToken[64]  = "";
+static char wifiSsid[64]      = "";
+static char wifiPass[64]      = "";
+static char gatewayToken[64]  = "";
+static char nodeName[32]      = "";
 
 static Preferences prefs;
 
@@ -70,12 +74,14 @@ static bool loadConfig() {
   prefs.begin("hm", true);
   String ssid  = prefs.getString("wifi_ssid", "");
   String pass  = prefs.getString("wifi_pass", "");
-  String token = prefs.getString("token",     "");
+  String gwtok = prefs.getString("gw_token",  "");
+  String node  = prefs.getString("node_name", "");
   prefs.end();
-  if (ssid.length() == 0 || token.length() == 0) return false;
-  ssid.toCharArray(wifiSsid,    sizeof(wifiSsid));
-  pass.toCharArray(wifiPass,    sizeof(wifiPass));
-  token.toCharArray(deviceToken, sizeof(deviceToken));
+  if (ssid.length() == 0 || gwtok.length() == 0 || node.length() == 0) return false;
+  ssid.toCharArray(wifiSsid,     sizeof(wifiSsid));
+  pass.toCharArray(wifiPass,     sizeof(wifiPass));
+  gwtok.toCharArray(gatewayToken, sizeof(gatewayToken));
+  node.toCharArray(nodeName,     sizeof(nodeName));
   return true;
 }
 
@@ -93,21 +99,28 @@ static const char PORTAL_HTML[] = R"html(
   h2{margin:0 0 6px;color:#1a1a2e;font-size:20px}
   p{margin:0 0 22px;color:#888;font-size:13px}
   label{display:block;font-size:13px;font-weight:600;color:#444;margin-bottom:5px}
-  input{display:block;width:100%;padding:10px 12px;border:1px solid #ddd;border-radius:8px;font-size:15px;margin-bottom:16px;outline:none}
-  input:focus{border-color:#2196F3}
+  input,select{display:block;width:100%;padding:10px 12px;border:1px solid #ddd;border-radius:8px;font-size:15px;margin-bottom:16px;outline:none;background:#fff}
+  input:focus,select:focus{border-color:#2196F3}
+  hr{border:none;border-top:1px solid #eee;margin:18px 0}
   button{width:100%;padding:13px;background:#2196F3;color:#fff;border:none;border-radius:8px;font-size:16px;font-weight:600;cursor:pointer}
   button:hover{background:#1976D2}
+  small{color:#aaa;font-size:12px;display:block;margin-top:-12px;margin-bottom:16px}
 </style></head><body>
 <div class="card">
   <h2>HealthMonitor Setup</h2>
-  <p>Enter your WiFi credentials and the ThingsBoard device access token.</p>
+  <p>Configure WiFi and ThingsBoard gateway credentials.</p>
   <form method="POST" action="/save">
     <label>WiFi Network (SSID)</label>
     <input name="ssid" placeholder="Your WiFi name" required>
     <label>WiFi Password</label>
     <input name="pass" type="password" placeholder="Leave blank if open network">
-    <label>ThingsBoard Device Token</label>
-    <input name="token" placeholder="Paste token from TB dashboard" required>
+    <hr>
+    <label>Gateway Access Token</label>
+    <input name="gwtok" placeholder="Paste from wearable_dev_gateway" required>
+    <small>TB → Devices → wearable_dev_gateway → Copy Access Token</small>
+    <label>Node Name</label>
+    <input name="node" placeholder="Node1" required>
+    <small>Must match the device name in ThingsBoard (Node1, Node2, …)</small>
     <button type="submit">Save &amp; Connect</button>
   </form>
 </div>
@@ -132,18 +145,20 @@ static void startConfigPortal() {
   server.on("/save", HTTP_POST, [&]() {
     String ssid  = server.arg("ssid");
     String pass  = server.arg("pass");
-    String token = server.arg("token");
+    String gwtok = server.arg("gwtok");
+    String node  = server.arg("node");
 
     prefs.begin("hm", false);
     prefs.putString("wifi_ssid", ssid);
     prefs.putString("wifi_pass", pass);
-    prefs.putString("token",     token);
+    prefs.putString("gw_token",  gwtok);
+    prefs.putString("node_name", node);
     prefs.end();
 
     server.send(200, "text/html",
       "<html><body style='font-family:sans-serif;max-width:420px;margin:40px auto;padding:24px'>"
       "<h2 style='color:#4CAF50'>Saved!</h2>"
-      "<p>Connecting to <b>" + ssid + "</b>.</p>"
+      "<p>Connecting to <b>" + ssid + "</b> as node <b>" + node + "</b>.</p>"
       "<p>Device is restarting&hellip;</p></body></html>");
     delay(1500);
     ESP.restart();
@@ -191,20 +206,20 @@ static void setupWiFi() {
   Serial.println(" (skipped)");
 }
 
-// ── POST telemetry ────────────────────────────────────────────────────────────
+// ── POST to gateway telemetry API ─────────────────────────────────────────────
 
-static void postToTB(int len) {
+static void postToGateway(int len) {
   WiFiClientSecure client;
   client.setInsecure();
   HTTPClient http;
-  http.begin(client, tbUrl("/api/v1/" + String(deviceToken) + "/telemetry"));
+  http.begin(client, tbUrl("/api/v1/" + String(gatewayToken) + "/telemetry"));
   http.addHeader("Content-Type", "application/json");
   int code = http.POST((uint8_t*)payload, len);
   http.end();
   if (code == 401) {
-    Serial.println("[TB] 401 — invalid token, restarting to portal");
+    Serial.println("[TB] 401 — invalid gateway token, restarting to portal");
     prefs.begin("hm", false);
-    prefs.remove("token");
+    prefs.remove("gw_token");
     prefs.end();
     delay(500);
     ESP.restart();
@@ -217,11 +232,12 @@ static void postToTB(int len) {
 }
 
 // ── Publish waveform batch ────────────────────────────────────────────────────
+// Gateway format: {"NodeX": [{"ts": T, "values": {"ecg": v, "ppg": v}}, ...]}
 
 static void publishWaveform() {
   unsigned long long batchTs = readyTs > 0 ? readyTs : epochMs();
   int pos = 0;
-  pos += snprintf(payload + pos, PAYLOAD_BUF_SIZE - pos, "[");
+  pos += snprintf(payload + pos, PAYLOAD_BUF_SIZE - pos, "{\"%s\":[", nodeName);
   for (int i = 0; i < BATCH_SIZE; i++) {
     unsigned long long ts =
       batchTs - (unsigned long long)(BATCH_SIZE - 1 - i) * SAMPLE_INTERVAL_MS;
@@ -229,30 +245,31 @@ static void publishWaveform() {
       "%s{\"ts\":%llu,\"values\":{\"ecg\":%d,\"ppg\":%d}}",
       i > 0 ? "," : "", ts, ecgReady[i], ppgReady[i]);
   }
-  pos += snprintf(payload + pos, PAYLOAD_BUF_SIZE - pos, "]");
-  postToTB(pos);
-  Serial.printf("[TB] wave %d bytes\n", pos);
+  pos += snprintf(payload + pos, PAYLOAD_BUF_SIZE - pos, "]}");
+  postToGateway(pos);
+  Serial.printf("[%s] wave %d bytes\n", nodeName, pos);
 }
 
 // ── Publish vitals ────────────────────────────────────────────────────────────
+// Gateway format: {"NodeX": [{"ts": T, "values": {vitals}}]}
 
 static void publishVitals(float ecgHr, float ppgHr, float spo2, float temp) {
   unsigned long long ts = epochMs();
   int pos;
   if (ts > 0) {
     pos = snprintf(payload, PAYLOAD_BUF_SIZE,
-      "[{\"ts\":%llu,\"values\":"
-      "{\"ecgHeartRate\":%.1f,\"ppgHeartRate\":%.1f,\"spo2\":%.1f,\"temperature\":%.1f}}]",
-      ts, ecgHr, ppgHr, spo2, temp);
+      "{\"%s\":[{\"ts\":%llu,\"values\":"
+      "{\"ecgHeartRate\":%.1f,\"ppgHeartRate\":%.1f,\"spo2\":%.1f,\"temperature\":%.1f}}]}",
+      nodeName, ts, ecgHr, ppgHr, spo2, temp);
   } else {
     pos = snprintf(payload, PAYLOAD_BUF_SIZE,
-      "[{\"values\":"
-      "{\"ecgHeartRate\":%.1f,\"ppgHeartRate\":%.1f,\"spo2\":%.1f,\"temperature\":%.1f}}]",
-      ecgHr, ppgHr, spo2, temp);
+      "{\"%s\":[{\"values\":"
+      "{\"ecgHeartRate\":%.1f,\"ppgHeartRate\":%.1f,\"spo2\":%.1f,\"temperature\":%.1f}}]}",
+      nodeName, ecgHr, ppgHr, spo2, temp);
   }
-  postToTB(pos);
-  Serial.printf("[TB] vitals ECG-HR:%.1f PPG-HR:%.1f SpO2:%.1f Temp:%.1f\n",
-                ecgHr, ppgHr, spo2, temp);
+  postToGateway(pos);
+  Serial.printf("[%s] vitals ECG-HR:%.1f PPG-HR:%.1f SpO2:%.1f Temp:%.1f\n",
+                nodeName, ecgHr, ppgHr, spo2, temp);
 }
 
 // ── Demo signal generators ────────────────────────────────────────────────────
@@ -304,7 +321,7 @@ void setup() {
     Serial.println("[Setup] No config — starting captive portal");
     startConfigPortal();  // never returns; restarts after save
   }
-  Serial.printf("[Setup] WiFi: %s  Token: %s\n", wifiSsid, deviceToken);
+  Serial.printf("[Setup] Node: %s  WiFi: %s\n", nodeName, wifiSsid);
 
   setupWiFi();
 
@@ -315,7 +332,7 @@ void setup() {
   esp_timer_create(&args, &timer);
   esp_timer_start_periodic(timer, SAMPLE_INTERVAL_US);
 
-  Serial.println("Ready — 250Hz");
+  Serial.printf("Ready — [%s] 250Hz via gateway\n", nodeName);
 }
 
 void loop() {
