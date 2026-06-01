@@ -12,11 +12,12 @@
 //   New nodes  → resolve access token → store in NVS.
 //   Gone nodes → remove token from NVS.
 //
-// Telemetry: one HTTP POST per node per batch (port 8080, no TLS).
+// Telemetry: one HTTPS POST per node per batch (port 443).
 // ─────────────────────────────────────────────────────────────────────────────
 
 #include <Arduino.h>
 #include <WiFi.h>
+#include <WiFiClientSecure.h>
 #include <HTTPClient.h>
 #include <WebServer.h>
 #include <DNSServer.h>
@@ -28,8 +29,7 @@
 
 // ── Compile-time constants ────────────────────────────────────────────────────
 
-const char* TB_HOST      = "c7.hust-2slab.org";
-const int   TB_HTTP_PORT = 8080;
+const char* TB_HOST = "c7.hust-2slab.org";
 
 #define SAMPLE_RATE_HZ       250
 #define SAMPLE_INTERVAL_US   (1000000 / SAMPLE_RATE_HZ)
@@ -58,9 +58,10 @@ static int    nodeCount = 0;
 static String adminJwt = "";
 static Preferences prefs;
 
-// ── Persistent HTTP clients (one per node, reused across posts) ──────────────
+// ── Persistent TLS clients (one per node, reused across posts) ───────────────
 
-static WiFiClient nodeClients[MAX_NODES];
+static WiFiClientSecure nodeClients[MAX_NODES];
+static bool             nodeClientInit[MAX_NODES] = {};
 
 // ── ECG background poster (Node1 only) ───────────────────────────────────────
 // loop() copies the batch here and returns immediately; the task does the post.
@@ -95,11 +96,11 @@ static unsigned long long epochMs() {
 }
 
 static String tbUrl(const String& path) {
-  return String("http://") + TB_HOST + ":" + String(TB_HTTP_PORT) + path;
+  return String("https://") + TB_HOST + path;
 }
 
 static String telemUrl(const char* token) {
-  return String("http://") + TB_HOST + ":" + String(TB_HTTP_PORT) + "/api/v1/" + token + "/telemetry";
+  return String("https://") + TB_HOST + "/api/v1/" + token + "/telemetry";
 }
 
 static String jsonStr(const String& json, const String& key) {
@@ -295,7 +296,7 @@ static bool ensureJwt() {
   char body[256];
   snprintf(body, sizeof(body),
     "{\"username\":\"%s\",\"password\":\"%s\"}", tbAdminUser, tbAdminPass);
-  WiFiClient cl;
+  WiFiClientSecure cl; cl.setInsecure();
   HTTPClient http;
   http.begin(cl, tbUrl("/api/auth/login"));
   http.addHeader("Content-Type", "application/json");
@@ -308,7 +309,7 @@ static bool ensureJwt() {
 }
 
 static int tbGet(const String& path, String& out) {
-  WiFiClient cl;
+  WiFiClientSecure cl; cl.setInsecure();
   HTTPClient http;
   http.begin(cl, tbUrl(path));
   http.addHeader("X-Authorization", "Bearer " + adminJwt);
@@ -320,7 +321,7 @@ static int tbGet(const String& path, String& out) {
 }
 
 static int tbPost(const String& path, const String& body, String& out) {
-  WiFiClient cl;
+  WiFiClientSecure cl; cl.setInsecure();
   HTTPClient http;
   http.begin(cl, tbUrl(path));
   http.addHeader("Content-Type", "application/json");
@@ -480,6 +481,10 @@ static void setupWiFi() {
 // ── POST telemetry to a specific node token ───────────────────────────────────
 
 static void postToNode(int nodeIdx, const char* buf, int len) {
+  if (!nodeClientInit[nodeIdx]) {
+    nodeClients[nodeIdx].setInsecure();
+    nodeClientInit[nodeIdx] = true;
+  }
   HTTPClient http;
   http.begin(nodeClients[nodeIdx], telemUrl(nodeToks[nodeIdx]));
   http.setReuse(true);
@@ -489,11 +494,13 @@ static void postToNode(int nodeIdx, const char* buf, int len) {
   if (code == 401) {
     Serial.printf("[TB] 401 for %s — will re-resolve on next sync\n", nodeNames[nodeIdx].c_str());
     nodeToks[nodeIdx][0] = '\0';
+    nodeClientInit[nodeIdx] = false;
     saveNodesToNVS();
-  } else if (code > 0 && code >= 300) {
-    Serial.printf("[TB] %s → %d\n", nodeNames[nodeIdx].c_str(), code);
   } else if (code < 0) {
+    nodeClientInit[nodeIdx] = false;
     Serial.printf("[TB] %s error: %s\n", nodeNames[nodeIdx].c_str(), HTTPClient::errorToString(code).c_str());
+  } else if (code >= 300) {
+    Serial.printf("[TB] %s → %d\n", nodeNames[nodeIdx].c_str(), code);
   }
 }
 
