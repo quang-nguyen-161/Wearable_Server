@@ -91,11 +91,6 @@ static String tbUrl(const String& path) {
   return String(USE_HTTPS ? "https" : "http") + "://" + TB_HOST + path;
 }
 
-// Telemetry uses plain HTTP (port 8080) — no TLS overhead for high-freq posts
-static String telemUrl(const String& token) {
-  return String("http://") + TB_HOST + ":8080/api/v1/" + token + "/telemetry";
-}
-
 static String jsonStr(const String& json, const String& key) {
   String needle = "\"" + key + "\":\"";
   int s = json.indexOf(needle);
@@ -475,9 +470,9 @@ static void setupWiFi() {
 
 static void nodePostTask(void* arg) {
   NodePostArgs* p = (NodePostArgs*)arg;
-  WiFiClient cl;
+  WiFiClientSecure cl; cl.setInsecure();
   HTTPClient http;
-  http.begin(cl, telemUrl(p->token));
+  http.begin(cl, tbUrl("/api/v1/" + String(p->token) + "/telemetry"));
   http.addHeader("Content-Type", "application/json");
   int code = http.POST((uint8_t*)p->buf, p->len);
   http.end();
@@ -489,9 +484,9 @@ static void nodePostTask(void* arg) {
 // ── POST telemetry to a specific node token ───────────────────────────────────
 
 static void postToNode(int nodeIdx, int len) {
-  WiFiClient cl;
+  WiFiClientSecure cl; cl.setInsecure();
   HTTPClient http;
-  http.begin(cl, telemUrl(nodeToks[nodeIdx]));
+  http.begin(cl, tbUrl("/api/v1/" + String(nodeToks[nodeIdx]) + "/telemetry"));
   http.addHeader("Content-Type", "application/json");
   int code = http.POST((uint8_t*)payload, len);
   http.end();
