@@ -37,6 +37,7 @@ function loadEnv(filePath) {
   } catch { /* .env.local not found — rely on shell env */ }
 }
 loadEnv('.env.local');
+loadEnv('../.env.local');
 
 // ── Config ────────────────────────────────────────────────────────────────
 

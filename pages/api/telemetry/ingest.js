@@ -129,6 +129,14 @@ export default async function handler(req, res) {
           telemetry.push({ ts: sampleTs, values });
         }
       }
+
+      // Also store ecg_batch as-is so WebSocket LATEST_TELEMETRY delivers
+      // all 50 samples at once to the dashboard for live waveform rendering
+      const batchValues = {};
+      if (ecg_batch) batchValues.ecg_batch = ecg_batch;
+      if (ppg_batch) batchValues.ppg_batch = ppg_batch;
+      if (Object.keys(batchValues).length > 0)
+        telemetry.push({ ts: batchTs, values: batchValues });
     }
 
     // Vitals — single timestamped entry at batchTs
