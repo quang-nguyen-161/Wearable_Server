@@ -63,6 +63,9 @@ static Preferences prefs;
 static WiFiClientSecure nodeClients[MAX_NODES];
 static bool             nodeClientInit[MAX_NODES] = {};
 
+// One TLS operation at a time — prevents concurrent SSL heap allocations (OOM).
+static SemaphoreHandle_t tlsMux = nullptr;
+
 // ── ECG background poster (Node1 only) ───────────────────────────────────────
 // loop() copies the batch here and returns immediately; the task does the post.
 // portMUX spinlock protects the ~300-byte copy across cores.
@@ -296,6 +299,7 @@ static bool ensureJwt() {
   char body[256];
   snprintf(body, sizeof(body),
     "{\"username\":\"%s\",\"password\":\"%s\"}", tbAdminUser, tbAdminPass);
+  xSemaphoreTake(tlsMux, portMAX_DELAY);
   WiFiClientSecure cl; cl.setInsecure();
   HTTPClient http;
   http.begin(cl, tbUrl("/api/auth/login"));
@@ -303,12 +307,14 @@ static bool ensureJwt() {
   int code = http.POST(body);
   resp = http.getString();
   http.end();
+  xSemaphoreGive(tlsMux);
   if (code != 200) { Serial.printf("[Auth] login failed %d\n", code); return false; }
   adminJwt = jsonStr(resp, "token");
   return adminJwt.length() > 0;
 }
 
 static int tbGet(const String& path, String& out) {
+  xSemaphoreTake(tlsMux, portMAX_DELAY);
   WiFiClientSecure cl; cl.setInsecure();
   HTTPClient http;
   http.begin(cl, tbUrl(path));
@@ -316,11 +322,13 @@ static int tbGet(const String& path, String& out) {
   int code = http.GET();
   out = http.getString();
   http.end();
-  if (code == 401) adminJwt = "";  // JWT expired — will re-login on next ensureJwt()
+  xSemaphoreGive(tlsMux);
+  if (code == 401) adminJwt = "";
   return code;
 }
 
 static int tbPost(const String& path, const String& body, String& out) {
+  xSemaphoreTake(tlsMux, portMAX_DELAY);
   WiFiClientSecure cl; cl.setInsecure();
   HTTPClient http;
   http.begin(cl, tbUrl(path));
@@ -329,6 +337,7 @@ static int tbPost(const String& path, const String& body, String& out) {
   int code = http.POST(body);
   out = http.getString();
   http.end();
+  xSemaphoreGive(tlsMux);
   return code;
 }
 
@@ -485,12 +494,14 @@ static void postToNode(int nodeIdx, const char* buf, int len) {
     nodeClients[nodeIdx].setInsecure();
     nodeClientInit[nodeIdx] = true;
   }
+  xSemaphoreTake(tlsMux, portMAX_DELAY);
   HTTPClient http;
   http.begin(nodeClients[nodeIdx], telemUrl(nodeToks[nodeIdx]));
   http.setReuse(true);
   http.addHeader("Content-Type", "application/json");
   int code = http.POST((uint8_t*)buf, len);
   http.end();
+  xSemaphoreGive(tlsMux);
   if (code == 401) {
     Serial.printf("[TB] 401 for %s — will re-resolve on next sync\n", nodeNames[nodeIdx].c_str());
     nodeToks[nodeIdx][0] = '\0';
@@ -612,6 +623,7 @@ static void publishVitals() {
 
 void setup() {
   Serial.begin(115200);
+  tlsMux = xSemaphoreCreateMutex();
 
   if (!loadConfig()) {
     Serial.println("[Setup] No config — starting captive portal");
