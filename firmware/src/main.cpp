@@ -58,6 +58,11 @@ static int    nodeCount = 0;
 static String adminJwt = "";
 static Preferences prefs;
 
+// ── Persistent TLS clients (one per node, reused across posts) ───────────────
+
+static WiFiClientSecure nodeClients[MAX_NODES];
+static bool             nodeClientInit[MAX_NODES] = {};
+
 // ── Buffers ───────────────────────────────────────────────────────────────────
 
 static int16_t ecgWork[BATCH_SIZE];
@@ -83,9 +88,8 @@ static String tbUrl(const String& path) {
   return String(USE_HTTPS ? "https" : "http") + "://" + TB_HOST + path;
 }
 
-// Telemetry uses plain HTTP port 8080 — no TLS overhead on high-freq path
 static String telemUrl(const char* token) {
-  return String("http://") + TB_HOST + ":8080/api/v1/" + token + "/telemetry";
+  return String("https://") + TB_HOST + "/api/v1/" + token + "/telemetry";
 }
 
 static String jsonStr(const String& json, const String& key) {
@@ -466,16 +470,20 @@ static void setupWiFi() {
 // ── POST telemetry to a specific node token ───────────────────────────────────
 
 static void postToNode(int nodeIdx, int len) {
-  WiFiClient cl;
+  if (!nodeClientInit[nodeIdx]) {
+    nodeClients[nodeIdx].setInsecure();
+    nodeClientInit[nodeIdx] = true;
+  }
   HTTPClient http;
-  http.begin(cl, telemUrl(nodeToks[nodeIdx]));
+  http.begin(nodeClients[nodeIdx], telemUrl(nodeToks[nodeIdx]));
+  http.setReuse(true);
   http.addHeader("Content-Type", "application/json");
   int code = http.POST((uint8_t*)payload, len);
   http.end();
   if (code == 401) {
     Serial.printf("[TB] 401 for %s — will re-resolve on next sync\n", nodeNames[nodeIdx].c_str());
-    // Clear token so syncNodes() re-resolves it
     nodeToks[nodeIdx][0] = '\0';
+    nodeClientInit[nodeIdx] = false;
     saveNodesToNVS();
   } else if (code > 0 && code >= 300) {
     Serial.printf("[TB] %s → %d\n", nodeNames[nodeIdx].c_str(), code);
