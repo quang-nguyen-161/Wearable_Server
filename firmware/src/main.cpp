@@ -23,6 +23,7 @@
 #include <DNSServer.h>
 #include <Preferences.h>
 #include <esp_timer.h>
+#include <freertos/task.h>
 #include <time.h>
 #include <math.h>
 
@@ -62,6 +63,17 @@ static Preferences prefs;
 
 static WiFiClientSecure nodeClients[MAX_NODES];
 static bool             nodeClientInit[MAX_NODES] = {};
+
+// ── ECG background poster (Node1 only) ───────────────────────────────────────
+// loop() copies the batch here and returns immediately; the task does the post.
+// portMUX spinlock protects the ~300-byte copy across cores.
+
+#define ECG_POST_BUF_SIZE 300
+static char         ecgPostBuf[ECG_POST_BUF_SIZE];
+static int          ecgPostLen      = 0;
+static int          ecgPostNodeIdx  = -1;
+static portMUX_TYPE ecgBufMux       = portMUX_INITIALIZER_UNLOCKED;
+static TaskHandle_t ecgTaskHandle   = nullptr;
 
 // ── Buffers ───────────────────────────────────────────────────────────────────
 
@@ -469,7 +481,7 @@ static void setupWiFi() {
 
 // ── POST telemetry to a specific node token ───────────────────────────────────
 
-static void postToNode(int nodeIdx, int len) {
+static void postToNode(int nodeIdx, const char* buf, int len) {
   if (!nodeClientInit[nodeIdx]) {
     nodeClients[nodeIdx].setInsecure();
     nodeClientInit[nodeIdx] = true;
@@ -478,7 +490,7 @@ static void postToNode(int nodeIdx, int len) {
   http.begin(nodeClients[nodeIdx], telemUrl(nodeToks[nodeIdx]));
   http.setReuse(true);
   http.addHeader("Content-Type", "application/json");
-  int code = http.POST((uint8_t*)payload, len);
+  int code = http.POST((uint8_t*)buf, len);
   http.end();
   if (code == 401) {
     Serial.printf("[TB] 401 for %s — will re-resolve on next sync\n", nodeNames[nodeIdx].c_str());
@@ -489,6 +501,26 @@ static void postToNode(int nodeIdx, int len) {
     Serial.printf("[TB] %s → %d\n", nodeNames[nodeIdx].c_str(), code);
   } else if (code < 0) {
     Serial.printf("[TB] %s error: %s\n", nodeNames[nodeIdx].c_str(), HTTPClient::errorToString(code).c_str());
+    nodeClientInit[nodeIdx] = false;
+  }
+}
+
+// ── ECG post task — runs on core 0, loop() runs on core 1 ────────────────────
+
+static void ecgPostTask(void*) {
+  char localBuf[ECG_POST_BUF_SIZE];
+  int  localLen, localNodeIdx;
+  for (;;) {
+    ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
+    taskENTER_CRITICAL(&ecgBufMux);
+    localLen     = ecgPostLen;
+    localNodeIdx = ecgPostNodeIdx;
+    memcpy(localBuf, ecgPostBuf, localLen);
+    taskEXIT_CRITICAL(&ecgBufMux);
+    if (localNodeIdx >= 0 && localLen > 0) {
+      postToNode(localNodeIdx, localBuf, localLen);
+      Serial.printf("[Node1] wave %d bytes\n", localLen);
+    }
   }
 }
 
@@ -525,21 +557,28 @@ static void onSampleTimer(void*) {
 // ── Publish waveform for all nodes ───────────────────────────────────────────
 
 static void publishWaveform() {
+  if (!ecgTaskHandle) return;
   uint32_t baseIdx = readySampleCount - BATCH_SIZE;
 
   for (int n = 0; n < nodeCount; n++) {
     if (nodeToks[n][0] == '\0') continue;
     if (nodeNames[n] != "Node1") continue;
 
-    int phaseOff = n * 67;
+    char localBuf[ECG_POST_BUF_SIZE];
     int pos = 0;
-    pos += snprintf(payload + pos, PAYLOAD_BUF_SIZE - pos, "{\"ecg_batch\":\"[");
+    pos += snprintf(localBuf + pos, ECG_POST_BUF_SIZE - pos, "{\"ecg_batch\":\"[");
     for (int i = 0; i < BATCH_SIZE; i++)
-      pos += snprintf(payload + pos, PAYLOAD_BUF_SIZE - pos,
-        "%s%d", i > 0 ? "," : "", ecgAt(baseIdx + i, phaseOff));
-    pos += snprintf(payload + pos, PAYLOAD_BUF_SIZE - pos, "]\"}");
-    postToNode(n, pos);
-    Serial.printf("[%s] wave %d bytes\n", nodeNames[n].c_str(), pos);
+      pos += snprintf(localBuf + pos, ECG_POST_BUF_SIZE - pos,
+        "%s%d", i > 0 ? "," : "", ecgAt(baseIdx + i, 0));
+    pos += snprintf(localBuf + pos, ECG_POST_BUF_SIZE - pos, "]\"}");
+
+    taskENTER_CRITICAL(&ecgBufMux);
+    memcpy(ecgPostBuf, localBuf, pos);
+    ecgPostLen     = pos;
+    ecgPostNodeIdx = n;
+    taskEXIT_CRITICAL(&ecgBufMux);
+    xTaskNotifyGive(ecgTaskHandle);
+    break;
   }
 }
 
@@ -565,7 +604,7 @@ static void publishVitals() {
         "{\"ecgHeartRate\":%.1f,\"spo2\":%.1f,\"temperature\":%.1f}}]",
         ecgHr, spo2, temp);
     }
-    postToNode(n, pos);
+    postToNode(n, payload, pos);
     Serial.printf("[%s] vitals HR:%.1f SpO2:%.1f\n", nodeNames[n].c_str(), ecgHr, spo2);
   }
 }
@@ -583,6 +622,8 @@ void setup() {
 
   setupWiFi();
   loadNodesFromNVS();
+
+  xTaskCreatePinnedToCore(ecgPostTask, "ecg_post", 8192, nullptr, 1, &ecgTaskHandle, 0);
 
   // Initial node sync (blocking — ensures we have tokens before starting timer)
   Serial.println("[Setup] Initial node sync...");
