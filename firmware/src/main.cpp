@@ -12,12 +12,11 @@
 //   New nodes  → resolve access token → store in NVS.
 //   Gone nodes → remove token from NVS.
 //
-// Telemetry: one HTTPS POST per node per batch (port 443).
+// Telemetry: one HTTP POST per node per batch (port 80).
 // ─────────────────────────────────────────────────────────────────────────────
 
 #include <Arduino.h>
 #include <WiFi.h>
-#include <WiFiClientSecure.h>
 #include <HTTPClient.h>
 #include <WebServer.h>
 #include <DNSServer.h>
@@ -34,7 +33,7 @@ const char* TB_HOST = "c7.hust-2slab.org";
 #define SAMPLE_RATE_HZ       250
 #define SAMPLE_INTERVAL_US   (1000000 / SAMPLE_RATE_HZ)
 #define SAMPLE_INTERVAL_MS   (1000 / SAMPLE_RATE_HZ)
-#define BATCH_SIZE           10
+#define BATCH_SIZE           50
 #define VITAL_INTERVAL_MS    15000
 #define NODE_SYNC_INTERVAL_MS 10000
 #define PAYLOAD_BUF_SIZE     4096
@@ -58,13 +57,9 @@ static int    nodeCount = 0;
 static String adminJwt = "";
 static Preferences prefs;
 
-// ── Persistent TLS clients (one per node, reused across posts) ───────────────
+// ── Persistent HTTP clients (one per node, reused across posts) ──────────────
 
-static WiFiClientSecure nodeClients[MAX_NODES];
-static bool             nodeClientInit[MAX_NODES] = {};
-
-// One TLS operation at a time — prevents concurrent SSL heap allocations (OOM).
-static SemaphoreHandle_t tlsMux = nullptr;
+static WiFiClient nodeClients[MAX_NODES];
 
 // ── ECG background poster (Node1 only) ───────────────────────────────────────
 // loop() copies the batch here and returns immediately; the task does the post.
@@ -99,11 +94,11 @@ static unsigned long long epochMs() {
 }
 
 static String tbUrl(const String& path) {
-  return String("https://") + TB_HOST + path;
+  return String("http://") + TB_HOST + path;
 }
 
 static String telemUrl(const char* token) {
-  return String("https://") + TB_HOST + "/api/v1/" + token + "/telemetry";
+  return String("http://") + TB_HOST + "/api/v1/" + token + "/telemetry";
 }
 
 static String jsonStr(const String& json, const String& key) {
@@ -299,37 +294,32 @@ static bool ensureJwt() {
   char body[256];
   snprintf(body, sizeof(body),
     "{\"username\":\"%s\",\"password\":\"%s\"}", tbAdminUser, tbAdminPass);
-  xSemaphoreTake(tlsMux, portMAX_DELAY);
-  WiFiClientSecure cl; cl.setInsecure();
+  WiFiClient cl;
   HTTPClient http;
   http.begin(cl, tbUrl("/api/auth/login"));
   http.addHeader("Content-Type", "application/json");
   int code = http.POST(body);
   resp = http.getString();
   http.end();
-  xSemaphoreGive(tlsMux);
   if (code != 200) { Serial.printf("[Auth] login failed %d\n", code); return false; }
   adminJwt = jsonStr(resp, "token");
   return adminJwt.length() > 0;
 }
 
 static int tbGet(const String& path, String& out) {
-  xSemaphoreTake(tlsMux, portMAX_DELAY);
-  WiFiClientSecure cl; cl.setInsecure();
+  WiFiClient cl;
   HTTPClient http;
   http.begin(cl, tbUrl(path));
   http.addHeader("X-Authorization", "Bearer " + adminJwt);
   int code = http.GET();
   out = http.getString();
   http.end();
-  xSemaphoreGive(tlsMux);
   if (code == 401) adminJwt = "";
   return code;
 }
 
 static int tbPost(const String& path, const String& body, String& out) {
-  xSemaphoreTake(tlsMux, portMAX_DELAY);
-  WiFiClientSecure cl; cl.setInsecure();
+  WiFiClient cl;
   HTTPClient http;
   http.begin(cl, tbUrl(path));
   http.addHeader("Content-Type", "application/json");
@@ -337,7 +327,6 @@ static int tbPost(const String& path, const String& body, String& out) {
   int code = http.POST(body);
   out = http.getString();
   http.end();
-  xSemaphoreGive(tlsMux);
   return code;
 }
 
@@ -490,25 +479,17 @@ static void setupWiFi() {
 // ── POST telemetry to a specific node token ───────────────────────────────────
 
 static void postToNode(int nodeIdx, const char* buf, int len) {
-  if (!nodeClientInit[nodeIdx]) {
-    nodeClients[nodeIdx].setInsecure();
-    nodeClientInit[nodeIdx] = true;
-  }
-  xSemaphoreTake(tlsMux, portMAX_DELAY);
   HTTPClient http;
   http.begin(nodeClients[nodeIdx], telemUrl(nodeToks[nodeIdx]));
   http.setReuse(true);
   http.addHeader("Content-Type", "application/json");
   int code = http.POST((uint8_t*)buf, len);
   http.end();
-  xSemaphoreGive(tlsMux);
   if (code == 401) {
     Serial.printf("[TB] 401 for %s — will re-resolve on next sync\n", nodeNames[nodeIdx].c_str());
     nodeToks[nodeIdx][0] = '\0';
-    nodeClientInit[nodeIdx] = false;
     saveNodesToNVS();
   } else if (code < 0) {
-    nodeClientInit[nodeIdx] = false;
     Serial.printf("[TB] %s error: %s\n", nodeNames[nodeIdx].c_str(), HTTPClient::errorToString(code).c_str());
   } else if (code >= 300) {
     Serial.printf("[TB] %s → %d\n", nodeNames[nodeIdx].c_str(), code);
@@ -623,7 +604,6 @@ static void publishVitals() {
 
 void setup() {
   Serial.begin(115200);
-  tlsMux = xSemaphoreCreateMutex();
 
   if (!loadConfig()) {
     Serial.println("[Setup] No config — starting captive portal");
