@@ -13,7 +13,7 @@
 ┌─────────────────────────────────────────────────────────────────────┐
 │                    THINGSBOARD CE  (c7.hust-2slab.org)              │
 │  Gateway device  ──auto-creates──►  Node1 / Node2 / Node3           │
-│  Stores: ecg, ppg, ecgHeartRate, ppgHeartRate, spo2, temperature    │
+│  Stores: ecg, ecgHeartRate, ppgHeartRate, spo2, temperature         │
 │  Attributes: thresholds, vitalInterval, ecgSampleFreq, patient info │
 └──────────────────────────┬──────────────────────────────────────────┘
                            │  WebSocket (wss://)  +  REST API (https://)
@@ -80,11 +80,10 @@ useTbWebSocket hook (browser)
       │
       │  Subscribes to LATEST_TELEMETRY for the selected device
       │  Receives: ppgHeartRate, ecgHeartRate, spo2, temperature
-      │            ecg_batch (JSON array), ppg_batch (JSON array)
+      │            ecg_batch (JSON array)
       │
       ├── pendingVitals → flush every 16ms → setVitals()
-      ├── pendingEcg    → flush every 16ms → setEcgData()  (rolling buffer)
-      └── pendingPpg    → flush every 16ms → setPpgData()  (rolling buffer)
+      └── pendingEcg    → flush every 16ms → setEcgData()  (rolling buffer)
 ```
 
 **Buffer size** = `max(1500, ecgSampleFreq × 10)` points
@@ -95,7 +94,7 @@ React re-render thrashing on high-frequency ECG data.
 
 ---
 
-## 3. ECG/PPG Waveform Flow
+## 3. ECG Waveform Flow
 
 ### Firmware → ThingsBoard
 
@@ -106,8 +105,7 @@ ESP32 (every ecgPacketInterval ms)
   │  Body: {
   │    deviceName: "Node1",
   │    ts: 1234567890,
-  │    ecg_batch: "[2048, 2391, 1876, ...]",   ← JSON string, N samples
-  │    ppg_batch: "[2048, 2100, 2050, ...]"
+  │    ecg_batch: "[2048, 2391, 1876, ...]"   ← JSON string, N samples
   │  }
   │
   ▼
@@ -118,19 +116,19 @@ pages/api/telemetry/ingest.js  (Next.js serverless — runs on Vercel)
   │       sampleTs = batchTs - (N-1-i) × (1000 / ecgSampleFreq) ms
   │  3. POST chunks of ≤50 points to TB device API:
   │       POST /api/v1/{deviceToken}/telemetry
-  │       Body: [{ ts, values: { ecg, ppg } }, ...]
+  │       Body: [{ ts, values: { ecg } }, ...]
   │
   ▼
-ThingsBoard stores ecg/ppg as individual time-series points
+ThingsBoard stores ecg as individual time-series points
   │
   ▼
-WebSocket pushes ecg_batch / ppg_batch to dashboard
+WebSocket pushes ecg_batch to dashboard
   │
   ▼
 parseWaveformBatch() reconstructs timestamps client-side
   │
   ▼
-TrendChart (isLiveWaveform) renders scrolling ECG/PPG waveform
+TrendChart (isLiveWaveform) renders scrolling ECG waveform
 ```
 
 ### Sample timestamp reconstruction
@@ -225,7 +223,7 @@ Settings page → saveDeviceAttributes(token, deviceId, scope, attrs)
 ## 6. No-Signal Detection
 
 ```
-lastBatchTs (updated each time ECG/PPG batch arrives)
+lastBatchTs (updated each time ECG batch arrives)
   │
   │  timeout = max(vitalInterval × 3, 10000) ms
   │  (3× the expected interval, minimum 10s)

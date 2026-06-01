@@ -754,7 +754,6 @@ export default function Dashboard() {
   const {
     vitals,
     ecgData,
-    ppgData,
     lastBatchTs,
     connected,
     lastUpdate,
@@ -1188,27 +1187,6 @@ export default function Dashboard() {
             </div>
           )}
 
-          {/* PPG Signal — live HTTPS waveform, each sample timestamped */}
-          {selectedDeviceId && (
-            <div className="chart-section chart-section--clickable" onClick={() => setSignalModal({ key: "ppg" })}>
-              <div className="chart-header">
-                <span className="chart-title">PPG / SpO₂ WAVEFORM</span>
-                <span className="chart-subtitle">(Live · {settings.ecgSampleFreq}Hz · vitals {settings.vitalInterval}ms)</span>
-                <span className="chart-badge" style={{ color: noSignal ? "var(--amber)" : "var(--cyan)" }}>
-                  {noSignal ? "NO SIGNAL" : "LIVE"}
-                </span>
-                <span className="chart-expand-hint">⤢ EXPAND</span>
-              </div>
-              <TrendChart
-                series={ppgData}
-                metricKey="ppg"
-                loading={false}
-                isLiveWaveform={true}
-                stroke="var(--cyan)"
-                sampleFreqHz={settings.ecgSampleFreq}
-              />
-            </div>
-          )}
         </main>
         </div>{/* end main-content */}
       </div>
@@ -1247,7 +1225,7 @@ export default function Dashboard() {
       {signalModal && (
         <SignalModal
           signalKey={signalModal.key}
-          series={signalModal.key === "ecg" ? ecgData : ppgData}
+          series={ecgData}
           onClose={() => setSignalModal(null)}
         />
       )}

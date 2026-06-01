@@ -1,4 +1,4 @@
-# STREAMING INSTRUCTION: HTTPS (ECG/PPG) + MQTT Gateway (Vitals)
+# STREAMING INSTRUCTION: HTTPS (ECG) + MQTT Gateway (Vitals)
 
 > **Purpose:** Complete reference for the dual-protocol streaming pipeline.
 > Read this alongside `DEVELOPMENT_GUIDE.md` before touching any firmware or
@@ -26,7 +26,7 @@
 
 | Stream | Protocol | Data | Rate | Delivery |
 |---|---|---|---|---|
-| Raw waveforms | **HTTPS POST** → `/api/telemetry/ingest` | `ecg_batch`, `ppg_batch` | 100 Hz (50-sample batch every 500ms) | Best-effort |
+| Raw waveforms | **HTTPS POST** → `/api/telemetry/ingest` | `ecg_batch` | 100 Hz (50-sample batch every 500ms) | Best-effort |
 | Vital parameters | **MQTT gateway** → ThingsBoard | `ecgHeartRate`, `ppgHeartRate`, `spo2`, `temperature` | Every 15s | QoS 0 |
 
 ---
@@ -37,7 +37,7 @@
 ┌──────────────────────────────────────────────────────────────┐
 │  ESP32 Device                                                │
 │                                                              │
-│  analogRead() @ 100Hz ──▶ ecgBuf / ppgBuf                   │
+│  analogRead() @ 100Hz ──▶ ecgBuf                             │
 │                                  │                           │
 │         every 50 samples         │       every 15 seconds    │
 │         (500ms)                  ▼       (15000ms)           │
@@ -202,17 +202,16 @@ POST /api/telemetry/ingest
 Body: {
   deviceName: "Node1",
   ts:         1716854400000,    // optional epoch ms; server uses Date.now() if absent
-  ecg_batch:  "[512,498,501,…]",
-  ppg_batch:  "[380,390,385,…]"
+  ecg_batch:  "[512,498,501,…]"
 }
 Response: { ok: true, device: "Node1", points: 50 }
 ```
 
 The server:
 1. Resolves `deviceName` → ThingsBoard device UUID (5-minute cache)
-2. Parses `ecg_batch` / `ppg_batch` JSON strings into arrays
+2. Parses `ecg_batch` JSON string into array
 3. Reconstructs per-sample timestamps: `sampleTs = batchTs - (n-1-i) * (1000/Hz)`
-4. POSTs `[{ts, values:{ecg, ppg}}, …]` to TB admin timeseries API
+4. POSTs `[{ts, values:{ecg}}, …]` to TB admin timeseries API
 
 ### Required environment variables
 
@@ -245,7 +244,7 @@ For Vercel: add all vars in `Vercel Dashboard → Project → Settings → Envir
 
 ### 4B — Waveform data in the dashboard
 
-ECG/PPG arrives in ThingsBoard as time-series `ecg` and `ppg` keys (individual samples, not batches — the ingest server decodes them). The existing `TrendChart` component and `/api/telemetry/history` endpoint serve this data unchanged.
+ECG arrives in ThingsBoard as time-series `ecg` keys (individual samples, not batches — the ingest server decodes them). The existing `TrendChart` component and `/api/telemetry/history` endpoint serve this data unchanged.
 
 ---
 
@@ -275,22 +274,22 @@ NEXT_PUBLIC_DEVICE_ID    = your-device-uuid
 
 ## Part 6 — Data Flow Reference
 
-### How ECG/PPG reaches the dashboard
+### How ECG reaches the dashboard
 
 ```
 ESP32
   → analogRead() at 100Hz
   → 50 samples buffered (500ms)
-  → JSON: { deviceName, ts, ecg_batch:"[…50]", ppg_batch:"[…50]" }
+  → JSON: { deviceName, ts, ecg_batch:"[…50]" }
   → HTTPS POST → /api/telemetry/ingest
 
 Next.js ingest handler
-  → parse arrays (50 values each)
+  → parse array (50 values)
   → reconstruct timestamps: batchTs - (49,48,…,0) × 10ms
-  → POST [{ts, values:{ecg,ppg}}, …×50] → TB admin API
+  → POST [{ts, values:{ecg}}, …×50] → TB admin API
 
 ThingsBoard
-  → stores ecg / ppg as individual time-series points
+  → stores ecg as individual time-series points
   → pushes latest values to WebSocket subscribers
 
 Dashboard
@@ -483,7 +482,7 @@ No server-side changes needed.
 - [ ] ESP32 sends HTTPS POST batches every 500ms (50 samples × 10ms at 100Hz)
 - [ ] ESP32 sends MQTT gateway vitals every 15s
 - [ ] ThingsBoard creates `Node1` device automatically on first MQTT publish
-- [ ] `ecg`, `ppg`, `ecgHeartRate`, `ppgHeartRate`, `spo2`, `temperature` visible in TB Latest Telemetry
+- [ ] `ecg`, `ecgHeartRate`, `ppgHeartRate`, `spo2`, `temperature` visible in TB Latest Telemetry
 - [ ] Ingest API returns `{ ok: true, points: 50 }` per batch
 - [ ] Dashboard waveform charts update from TB history/WebSocket
 - [ ] HR / SpO2 / Temp VitalCards update from both WS and REST
