@@ -58,10 +58,11 @@ static int    nodeCount = 0;
 static String adminJwt = "";
 static Preferences prefs;
 
-// ── Persistent TLS clients for telemetry (one per node, reused across posts) ──
+// ── Single persistent TLS client for telemetry ───────────────────────────────
+// Only one node (Node1) is posted to at a time; one TLS session saves ~40KB×15.
 
-static WiFiClientSecure nodeClients[MAX_NODES];
-static bool             nodeTlsInit[MAX_NODES] = {};
+static WiFiClientSecure telemClient;
+static bool             telemClientInit = false;
 
 // ── ECG background poster (Node1 only) ───────────────────────────────────────
 // loop() copies the batch here and returns immediately; the task does the post.
@@ -481,12 +482,12 @@ static void setupWiFi() {
 // ── POST telemetry to a specific node token ───────────────────────────────────
 
 static void postToNode(int nodeIdx, const char* buf, int len) {
-  if (!nodeTlsInit[nodeIdx]) {
-    nodeClients[nodeIdx].setInsecure();
-    nodeTlsInit[nodeIdx] = true;
+  if (!telemClientInit) {
+    telemClient.setInsecure();
+    telemClientInit = true;
   }
   HTTPClient http;
-  http.begin(nodeClients[nodeIdx], telemUrl(nodeToks[nodeIdx]));
+  http.begin(telemClient, telemUrl(nodeToks[nodeIdx]));
   http.setReuse(true);
   http.addHeader("Content-Type", "application/json");
   int code = http.POST((uint8_t*)buf, len);
@@ -494,11 +495,10 @@ static void postToNode(int nodeIdx, const char* buf, int len) {
   if (code == 401) {
     Serial.printf("[TB] 401 for %s — re-resolve on next sync\n", nodeNames[nodeIdx].c_str());
     nodeToks[nodeIdx][0] = '\0';
-    nodeTlsInit[nodeIdx] = false;
     saveNodesToNVS();
   } else if (code < 0) {
     Serial.printf("[TB] %s error: %s\n", nodeNames[nodeIdx].c_str(), HTTPClient::errorToString(code).c_str());
-    nodeTlsInit[nodeIdx] = false;  // force TLS re-init on next attempt
+    telemClientInit = false;  // force TLS re-init on next attempt
   } else if (code >= 300) {
     Serial.printf("[TB] %s → %d\n", nodeNames[nodeIdx].c_str(), code);
   }
