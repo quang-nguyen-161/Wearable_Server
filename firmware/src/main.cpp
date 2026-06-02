@@ -493,7 +493,8 @@ static void setupWiFi() {
 
 static void postToNode(int nodeIdx, const char* buf, int len) {
   xSemaphoreTake(tlsMux, portMAX_DELAY);
-  if (!telemClientInit) {
+  if (!telemClientInit || !telemClient.connected()) {
+    telemClient.stop();
     telemClient.setInsecure();
     telemClientInit = true;
   }
