@@ -626,6 +626,8 @@ static void publishVitals() {
 
 void setup() {
   Serial.begin(115200);
+  esp_log_level_set("ssl_client",      ESP_LOG_NONE);
+  esp_log_level_set("WiFiClientSecure", ESP_LOG_NONE);
 
   if (!loadConfig()) {
     Serial.println("[Setup] No config — starting captive portal");
