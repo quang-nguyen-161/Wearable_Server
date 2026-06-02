@@ -49,7 +49,9 @@ function LineChart({ series, meta }) {
   const CH = H - PAD.top  - PAD.bottom;
 
   if (!series?.length) {
-    return <div style={{ height: H, display:"flex", alignItems:"center", justifyContent:"center", color:"var(--color-text-secondary,#94a3b8)", fontSize:13 }}>NO DATA AVAILABLE</div>;
+    const msg = fetchError ? `Error: ${fetchError}` : "NO DATA AVAILABLE";
+    const col = fetchError ? "#f87171" : "var(--color-text-secondary,#94a3b8)";
+    return <div style={{ height: H, display:"flex", alignItems:"center", justifyContent:"center", color: col, fontSize:13, padding:"0 16px", textAlign:"center" }}>{msg}</div>;
   }
 
   const vals  = series.map(p => p.value);
@@ -197,16 +199,26 @@ export default function VitalHistoryModal({ vitalKey, deviceId, currentValue, on
   const [endTs,   setEndTs]   = useState(now);
   const [series,  setSeries]  = useState([]);
   const [loading, setLoading] = useState(false);
+  const [fetchError, setFetchError] = useState(null);
 
   const fetchHistory = useCallback(async () => {
     if (!deviceId || !vitalKey) return;
     setLoading(true);
+    setFetchError(null);
     try {
       const hours = (endTs - startTs) / 3600_000;
       const res   = await fetch(`/api/telemetry/history?deviceId=${deviceId}&key=${vitalKey}&hours=${hours.toFixed(4)}&limit=5000`);
       const json  = await res.json();
+      if (!res.ok) {
+        setFetchError(json.error || `HTTP ${res.status}`);
+        setSeries([]);
+        return;
+      }
       setSeries((json.series || []).filter(p => p.ts >= startTs && p.ts <= endTs));
-    } catch(e) { console.error(e); }
+    } catch(e) {
+      console.error(e);
+      setFetchError(e.message);
+    }
     finally { setLoading(false); }
   }, [deviceId, vitalKey, startTs, endTs]);
 
