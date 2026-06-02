@@ -191,7 +191,7 @@ function LineChart({ series, meta, fetchError }) {
 }
 
 // ── Modal ──────────────────────────────────────────────────────────────────
-export default function VitalHistoryModal({ vitalKey, deviceId, currentValue, onClose }) {
+export default function VitalHistoryModal({ vitalKey, deviceId, tbToken, currentValue, onClose }) {
   const meta = VITAL_META[vitalKey];
 
   const now = Date.now();
@@ -207,7 +207,8 @@ export default function VitalHistoryModal({ vitalKey, deviceId, currentValue, on
     setFetchError(null);
     try {
       const hours = (endTs - startTs) / 3600_000;
-      const res   = await fetch(`/api/telemetry/history?deviceId=${deviceId}&key=${vitalKey}&hours=${hours.toFixed(4)}&limit=5000`);
+      const headers = tbToken ? { "x-tb-token": tbToken } : {};
+      const res   = await fetch(`/api/telemetry/history?deviceId=${deviceId}&key=${vitalKey}&hours=${hours.toFixed(4)}&limit=5000`, { headers });
       const json  = await res.json();
       if (!res.ok) {
         setFetchError(json.error || `HTTP ${res.status}`);

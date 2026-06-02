@@ -1205,6 +1205,7 @@ export default function Dashboard() {
         <VitalHistoryModal
           vitalKey={vitalModal.vitalKey}
           deviceId={selectedDeviceId}
+          tbToken={tbAuthToken}
           currentValue={getValue(vitalModal.vitalKey)}
           onClose={() => setVitalModal(null)}
         />

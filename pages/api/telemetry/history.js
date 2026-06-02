@@ -5,6 +5,7 @@
 
 import { getTelemetryHistory } from "../../../lib/thingsboard";
 
+
 export default async function handler(req, res) {
   if (req.method !== "GET") return res.status(405).json({ error: "Method not allowed" });
 
@@ -16,8 +17,10 @@ export default async function handler(req, res) {
   if (!deviceId) return res.status(400).json({ error: "Missing deviceId", series: [] });
   if (!key)      return res.status(400).json({ error: "Missing key",      series: [] });
 
+  const forwardedToken = req.headers["x-tb-token"] || null;
+
   try {
-    const series = await getTelemetryHistory(deviceId, key, hours, limit);
+    const series = await getTelemetryHistory(deviceId, key, hours, limit, forwardedToken);
     return res.status(200).json({ series });
   } catch (err) {
     console.error("[telemetry/history]", err.message);
