@@ -1,5 +1,6 @@
 // components/VitalHistoryModal.js
 import { useState, useEffect, useCallback, useRef } from "react";
+import { getTelemetryHistory } from "../lib/tbBrowserClient";
 
 const VITAL_META = {
   ppgHeartRate: { label: "PPG Heart Rate", unit: "bpm", normalMin: 60,   normalMax: 100,  warnMin: 50,  warnMax: 120, dangerMin: 40,   dangerMax: 130  },
@@ -202,26 +203,19 @@ export default function VitalHistoryModal({ vitalKey, deviceId, tbToken, current
   const [fetchError, setFetchError] = useState(null);
 
   const fetchHistory = useCallback(async () => {
-    if (!deviceId || !vitalKey) return;
+    if (!deviceId || !vitalKey || !tbToken) return;
     setLoading(true);
     setFetchError(null);
     try {
       const hours = (endTs - startTs) / 3600_000;
-      const headers = tbToken ? { "x-tb-token": tbToken } : {};
-      const res   = await fetch(`/api/telemetry/history?deviceId=${deviceId}&key=${vitalKey}&hours=${hours.toFixed(4)}&limit=5000`, { headers });
-      const json  = await res.json();
-      if (!res.ok) {
-        setFetchError(json.error || `HTTP ${res.status}`);
-        setSeries([]);
-        return;
-      }
-      setSeries((json.series || []).filter(p => p.ts >= startTs && p.ts <= endTs));
+      const pts = await getTelemetryHistory(tbToken, deviceId, vitalKey, hours, 5000);
+      setSeries(pts.filter(p => p.ts >= startTs && p.ts <= endTs));
     } catch(e) {
       console.error(e);
       setFetchError(e.message);
     }
     finally { setLoading(false); }
-  }, [deviceId, vitalKey, startTs, endTs]);
+  }, [deviceId, vitalKey, tbToken, startTs, endTs]);
 
   useEffect(() => { fetchHistory(); }, [fetchHistory]);
 
