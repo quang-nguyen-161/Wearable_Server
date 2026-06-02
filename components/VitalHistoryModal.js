@@ -39,7 +39,7 @@ function toInputVal(ts) {
 }
 
 // ── Chart ─────────────────────────────────────────────────────────────────
-function LineChart({ series, meta }) {
+function LineChart({ series, meta, fetchError }) {
   const containerRef = useRef(null);
   const [tooltip, setTooltip] = useState(null); // { x, y, point } — relative to container
 
@@ -332,7 +332,7 @@ export default function VitalHistoryModal({ vitalKey, deviceId, currentValue, on
           </div>
           {loading
             ? <div style={{ height:240, display:"flex", alignItems:"center", justifyContent:"center", color:"var(--color-text-secondary,#94a3b8)", fontSize:13 }}>Loading...</div>
-            : <LineChart series={series} meta={meta} />
+            : <LineChart series={series} meta={meta} fetchError={fetchError} />
           }
         </div>
       </div>
