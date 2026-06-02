@@ -58,11 +58,13 @@ static int    nodeCount = 0;
 static String adminJwt = "";
 static Preferences prefs;
 
-// ── Single persistent TLS client for telemetry ───────────────────────────────
-// Only one node (Node1) is posted to at a time; one TLS session saves ~40KB×15.
+// ── TLS clients — one for telemetry, one shared for admin API ────────────────
+// Keeping sessions persistent avoids re-handshake cost and caps TLS heap at ~80KB.
 
 static WiFiClientSecure telemClient;
 static bool             telemClientInit = false;
+static WiFiClientSecure adminClient;
+static bool             adminClientInit = false;
 
 // ── ECG background poster (Node1 only) ───────────────────────────────────────
 // loop() copies the batch here and returns immediately; the task does the post.
@@ -297,9 +299,9 @@ static bool ensureJwt() {
   char body[256];
   snprintf(body, sizeof(body),
     "{\"username\":\"%s\",\"password\":\"%s\"}", tbAdminUser, tbAdminPass);
-  WiFiClientSecure cl; cl.setInsecure();
+  if (!adminClientInit) { adminClient.setInsecure(); adminClientInit = true; }
   HTTPClient http;
-  http.begin(cl, tbUrl("/api/auth/login"));
+  http.begin(adminClient, tbUrl("/api/auth/login"));
   http.addHeader("Content-Type", "application/json");
   int code = http.POST(body);
   resp = http.getString();
@@ -310,9 +312,9 @@ static bool ensureJwt() {
 }
 
 static int tbGet(const String& path, String& out) {
-  WiFiClientSecure cl; cl.setInsecure();
+  if (!adminClientInit) { adminClient.setInsecure(); adminClientInit = true; }
   HTTPClient http;
-  http.begin(cl, tbUrl(path));
+  http.begin(adminClient, tbUrl(path));
   http.addHeader("X-Authorization", "Bearer " + adminJwt);
   int code = http.GET();
   out = http.getString();
@@ -322,9 +324,9 @@ static int tbGet(const String& path, String& out) {
 }
 
 static int tbPost(const String& path, const String& body, String& out) {
-  WiFiClientSecure cl; cl.setInsecure();
+  if (!adminClientInit) { adminClient.setInsecure(); adminClientInit = true; }
   HTTPClient http;
-  http.begin(cl, tbUrl(path));
+  http.begin(adminClient, tbUrl(path));
   http.addHeader("Content-Type", "application/json");
   if (adminJwt.length()) http.addHeader("X-Authorization", "Bearer " + adminJwt);
   int code = http.POST(body);
@@ -498,7 +500,8 @@ static void postToNode(int nodeIdx, const char* buf, int len) {
     saveNodesToNVS();
   } else if (code < 0) {
     Serial.printf("[TB] %s error: %s\n", nodeNames[nodeIdx].c_str(), HTTPClient::errorToString(code).c_str());
-    telemClientInit = false;  // force TLS re-init on next attempt
+    telemClient.stop();   // free TLS heap before next attempt
+    telemClientInit = false;
   } else if (code >= 300) {
     Serial.printf("[TB] %s → %d\n", nodeNames[nodeIdx].c_str(), code);
   }
