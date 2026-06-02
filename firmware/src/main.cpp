@@ -96,7 +96,7 @@ static unsigned long long epochMs() {
 }
 
 static String tbUrl(const String& path) {
-  return String("http://") + TB_HOST + ":8080" + path;
+  return String("https://") + TB_HOST + path;
 }
 
 static String telemUrl(const char* token) {
@@ -296,7 +296,7 @@ static bool ensureJwt() {
   char body[256];
   snprintf(body, sizeof(body),
     "{\"username\":\"%s\",\"password\":\"%s\"}", tbAdminUser, tbAdminPass);
-  WiFiClient cl;
+  WiFiClientSecure cl; cl.setInsecure();
   HTTPClient http;
   http.begin(cl, tbUrl("/api/auth/login"));
   http.addHeader("Content-Type", "application/json");
@@ -309,7 +309,7 @@ static bool ensureJwt() {
 }
 
 static int tbGet(const String& path, String& out) {
-  WiFiClient cl;
+  WiFiClientSecure cl; cl.setInsecure();
   HTTPClient http;
   http.begin(cl, tbUrl(path));
   http.addHeader("X-Authorization", "Bearer " + adminJwt);
@@ -321,7 +321,7 @@ static int tbGet(const String& path, String& out) {
 }
 
 static int tbPost(const String& path, const String& body, String& out) {
-  WiFiClient cl;
+  WiFiClientSecure cl; cl.setInsecure();
   HTTPClient http;
   http.begin(cl, tbUrl(path));
   http.addHeader("Content-Type", "application/json");
