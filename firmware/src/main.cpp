@@ -58,13 +58,15 @@ static int    nodeCount = 0;
 static String adminJwt = "";
 static Preferences prefs;
 
-// ── TLS clients — one for telemetry, one shared for admin API ────────────────
-// Keeping sessions persistent avoids re-handshake cost and caps TLS heap at ~80KB.
+// ── TLS clients + serialisation mutex ────────────────────────────────────────
+// WiFiClientSecure/mbedTLS is NOT thread-safe; tlsMux ensures only one TLS op
+// runs at a time across Core 0 (ecgPostTask) and Core 1 (loop/syncNodes).
 
-static WiFiClientSecure telemClient;
-static bool             telemClientInit = false;
-static WiFiClientSecure adminClient;
-static bool             adminClientInit = false;
+static WiFiClientSecure  telemClient;
+static bool              telemClientInit = false;
+static WiFiClientSecure  adminClient;
+static bool              adminClientInit = false;
+static SemaphoreHandle_t tlsMux         = nullptr;
 
 // ── ECG background poster (Node1 only) ───────────────────────────────────────
 // loop() copies the batch here and returns immediately; the task does the post.
@@ -299,6 +301,7 @@ static bool ensureJwt() {
   char body[256];
   snprintf(body, sizeof(body),
     "{\"username\":\"%s\",\"password\":\"%s\"}", tbAdminUser, tbAdminPass);
+  xSemaphoreTake(tlsMux, portMAX_DELAY);
   if (!adminClientInit) { adminClient.setInsecure(); adminClientInit = true; }
   HTTPClient http;
   http.begin(adminClient, tbUrl("/api/auth/login"));
@@ -306,12 +309,14 @@ static bool ensureJwt() {
   int code = http.POST(body);
   resp = http.getString();
   http.end();
+  xSemaphoreGive(tlsMux);
   if (code != 200) { Serial.printf("[Auth] login failed %d\n", code); return false; }
   adminJwt = jsonStr(resp, "token");
   return adminJwt.length() > 0;
 }
 
 static int tbGet(const String& path, String& out) {
+  xSemaphoreTake(tlsMux, portMAX_DELAY);
   if (!adminClientInit) { adminClient.setInsecure(); adminClientInit = true; }
   HTTPClient http;
   http.begin(adminClient, tbUrl(path));
@@ -319,11 +324,13 @@ static int tbGet(const String& path, String& out) {
   int code = http.GET();
   out = http.getString();
   http.end();
+  xSemaphoreGive(tlsMux);
   if (code == 401) adminJwt = "";
   return code;
 }
 
 static int tbPost(const String& path, const String& body, String& out) {
+  xSemaphoreTake(tlsMux, portMAX_DELAY);
   if (!adminClientInit) { adminClient.setInsecure(); adminClientInit = true; }
   HTTPClient http;
   http.begin(adminClient, tbUrl(path));
@@ -332,6 +339,7 @@ static int tbPost(const String& path, const String& body, String& out) {
   int code = http.POST(body);
   out = http.getString();
   http.end();
+  xSemaphoreGive(tlsMux);
   return code;
 }
 
@@ -484,6 +492,7 @@ static void setupWiFi() {
 // ── POST telemetry to a specific node token ───────────────────────────────────
 
 static void postToNode(int nodeIdx, const char* buf, int len) {
+  xSemaphoreTake(tlsMux, portMAX_DELAY);
   if (!telemClientInit) {
     telemClient.setInsecure();
     telemClientInit = true;
@@ -500,11 +509,12 @@ static void postToNode(int nodeIdx, const char* buf, int len) {
     saveNodesToNVS();
   } else if (code < 0) {
     Serial.printf("[TB] %s error: %s\n", nodeNames[nodeIdx].c_str(), HTTPClient::errorToString(code).c_str());
-    telemClient.stop();   // free TLS heap before next attempt
+    telemClient.stop();
     telemClientInit = false;
   } else if (code >= 300) {
     Serial.printf("[TB] %s → %d\n", nodeNames[nodeIdx].c_str(), code);
   }
+  xSemaphoreGive(tlsMux);
 }
 
 // ── ECG post task — runs on core 0, loop() runs on core 1 ────────────────────
@@ -625,6 +635,7 @@ void setup() {
   setupWiFi();
   loadNodesFromNVS();
 
+  tlsMux = xSemaphoreCreateMutex();
   xTaskCreatePinnedToCore(ecgPostTask, "ecg_post", 32768, nullptr, 2, &ecgTaskHandle, 0);
 
   // Initial node sync (blocking — ensures we have tokens before starting timer)
