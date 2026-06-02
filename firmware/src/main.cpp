@@ -12,11 +12,12 @@
 //   New nodes  → resolve access token → store in NVS.
 //   Gone nodes → remove token from NVS.
 //
-// Telemetry: one HTTP POST per node per batch (port 80).
+// Telemetry: HTTPS POST per batch (TLS reused after first handshake); admin API via HTTP.
 // ─────────────────────────────────────────────────────────────────────────────
 
 #include <Arduino.h>
 #include <WiFi.h>
+#include <WiFiClientSecure.h>
 #include <HTTPClient.h>
 #include <WebServer.h>
 #include <DNSServer.h>
@@ -33,7 +34,7 @@ const char* TB_HOST = "c7.hust-2slab.org";
 #define SAMPLE_RATE_HZ       250
 #define SAMPLE_INTERVAL_US   (1000000 / SAMPLE_RATE_HZ)
 #define SAMPLE_INTERVAL_MS   (1000 / SAMPLE_RATE_HZ)
-#define BATCH_SIZE           50
+#define BATCH_SIZE           250
 #define VITAL_INTERVAL_MS    15000
 #define NODE_SYNC_INTERVAL_MS 10000
 #define PAYLOAD_BUF_SIZE     4096
@@ -57,15 +58,16 @@ static int    nodeCount = 0;
 static String adminJwt = "";
 static Preferences prefs;
 
-// ── Persistent HTTP clients (one per node, reused across posts) ──────────────
+// ── Persistent TLS clients for telemetry (one per node, reused across posts) ──
 
-static WiFiClient nodeClients[MAX_NODES];
+static WiFiClientSecure nodeClients[MAX_NODES];
+static bool             nodeTlsInit[MAX_NODES] = {};
 
 // ── ECG background poster (Node1 only) ───────────────────────────────────────
 // loop() copies the batch here and returns immediately; the task does the post.
 // portMUX spinlock protects the ~300-byte copy across cores.
 
-#define ECG_POST_BUF_SIZE 300
+#define ECG_POST_BUF_SIZE 1400
 static char         ecgPostBuf[ECG_POST_BUF_SIZE];
 static int          ecgPostLen      = 0;
 static int          ecgPostNodeIdx  = -1;
@@ -98,7 +100,7 @@ static String tbUrl(const String& path) {
 }
 
 static String telemUrl(const char* token) {
-  return String("http://") + TB_HOST + "/api/v1/" + token + "/telemetry";
+  return String("https://") + TB_HOST + "/api/v1/" + token + "/telemetry";
 }
 
 static String jsonStr(const String& json, const String& key) {
@@ -479,6 +481,10 @@ static void setupWiFi() {
 // ── POST telemetry to a specific node token ───────────────────────────────────
 
 static void postToNode(int nodeIdx, const char* buf, int len) {
+  if (!nodeTlsInit[nodeIdx]) {
+    nodeClients[nodeIdx].setInsecure();
+    nodeTlsInit[nodeIdx] = true;
+  }
   HTTPClient http;
   http.begin(nodeClients[nodeIdx], telemUrl(nodeToks[nodeIdx]));
   http.setReuse(true);
@@ -486,11 +492,13 @@ static void postToNode(int nodeIdx, const char* buf, int len) {
   int code = http.POST((uint8_t*)buf, len);
   http.end();
   if (code == 401) {
-    Serial.printf("[TB] 401 for %s — will re-resolve on next sync\n", nodeNames[nodeIdx].c_str());
+    Serial.printf("[TB] 401 for %s — re-resolve on next sync\n", nodeNames[nodeIdx].c_str());
     nodeToks[nodeIdx][0] = '\0';
+    nodeTlsInit[nodeIdx] = false;
     saveNodesToNVS();
   } else if (code < 0) {
     Serial.printf("[TB] %s error: %s\n", nodeNames[nodeIdx].c_str(), HTTPClient::errorToString(code).c_str());
+    nodeTlsInit[nodeIdx] = false;  // force TLS re-init on next attempt
   } else if (code >= 300) {
     Serial.printf("[TB] %s → %d\n", nodeNames[nodeIdx].c_str(), code);
   }
