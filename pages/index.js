@@ -14,7 +14,7 @@ import { useNotifications } from "../hooks/useNotifications";
 import { useTrends } from "../hooks/useTrends";
 import { useSettings } from "../context/SettingsContext";
 import { useTbAuth } from "../context/TbAuthContext";
-import { getDevices, getPatientInfo, saveDeviceAttributes, createDevice, addDeviceRelation, deleteDevice, GATEWAY_ID } from "../lib/tbBrowserClient";
+import { getDevices, getPatientInfo, getDeviceAttributes, saveDeviceAttributes, createDevice, addDeviceRelation, deleteDevice, GATEWAY_ID } from "../lib/tbBrowserClient";
 
 /* ── Vital definitions ─────────────────────────────────────────────── */
 const VITALS = [
@@ -690,6 +690,7 @@ export default function Dashboard() {
   const [patientModal,     setPatientModal]     = useState(false);
   const [signalModal,      setSignalModal]      = useState(null);
   const [ecgWindowSec,     setEcgWindowSec]     = useState(10);
+  const [ecgEnabledMap,    setEcgEnabledMap]    = useState({});
   const [printModal,       setPrintModal]       = useState(false);
   const [otaModal,         setOtaModal]         = useState(false);
   const [overviewModal,    setOverviewModal]    = useState(false);
@@ -764,11 +765,30 @@ export default function Dashboard() {
       const list = await getDevices(tbAuthToken);
       setDevices(list);
       if (list.length > 0 && !selectedDeviceId) setSelectedDeviceId(list[0].id);
+      // Load showEcg attribute for every device in parallel
+      const results = await Promise.allSettled(list.map(d => getDeviceAttributes(tbAuthToken, d.id)));
+      const map = {};
+      results.forEach((r, i) => {
+        map[list[i].id] = r.status === "fulfilled" ? (r.value.showEcg ?? true) : true;
+      });
+      setEcgEnabledMap(map);
     } catch (err) {
       console.error("Device list fetch error:", err);
       setError(err.message);
     } finally {
       setDevicesLoading(false);
+    }
+  }, [tbAuthToken]);
+
+  /* ── Toggle ECG visibility for a device ── */
+  const handleToggleEcg = useCallback(async (deviceId, currentlyEnabled) => {
+    const newVal = !currentlyEnabled;
+    setEcgEnabledMap(prev => ({ ...prev, [deviceId]: newVal }));
+    try {
+      await saveDeviceAttributes(tbAuthToken, deviceId, "SHARED_SCOPE", { showEcg: newVal });
+    } catch (e) {
+      console.error("Failed to save showEcg:", e);
+      setEcgEnabledMap(prev => ({ ...prev, [deviceId]: currentlyEnabled }));
     }
   }, [tbAuthToken]);
 
@@ -1001,6 +1021,13 @@ export default function Dashboard() {
                     >
                       ✕
                     </button>
+                    <button
+                      className={`ecg-toggle-pill ${ecgEnabledMap[device.id] !== false ? "ecg-toggle-pill--on" : "ecg-toggle-pill--off"}`}
+                      onClick={(e) => { e.stopPropagation(); handleToggleEcg(device.id, ecgEnabledMap[device.id] !== false); }}
+                      title={ecgEnabledMap[device.id] !== false ? "ECG shown — click to hide" : "ECG hidden — click to show"}
+                    >
+                      {ecgEnabledMap[device.id] !== false ? "ECG ON" : "ECG OFF"}
+                    </button>
                   </div>
                 );
               })
@@ -1123,7 +1150,7 @@ export default function Dashboard() {
             })}
 
           {/* ECG Signal — live HTTPS waveform, each sample timestamped */}
-          {selectedDeviceId && (
+          {selectedDeviceId && ecgEnabledMap[selectedDeviceId] !== false && (
             <div className="chart-section chart-section--clickable" onClick={() => setSignalModal({ key: "ecg" })}>
               <div className="chart-header">
                 <span className="chart-title">ECG SIGNAL</span>
@@ -1376,6 +1403,30 @@ export default function Dashboard() {
 
         .device-card-wrapper:hover .device-detail-btn {
           opacity: 1;
+        }
+
+        .ecg-toggle-pill {
+          margin-top: 4px;
+          font-size: 9px;
+          font-weight: 700;
+          letter-spacing: 0.07em;
+          padding: 2px 8px;
+          border-radius: 20px;
+          border: 1px solid;
+          cursor: pointer;
+          font-family: inherit;
+          transition: all 0.15s;
+          white-space: nowrap;
+        }
+        .ecg-toggle-pill--on {
+          background: rgba(112,173,71,0.12);
+          border-color: rgba(112,173,71,0.4);
+          color: #70AD47;
+        }
+        .ecg-toggle-pill--off {
+          background: rgba(148,163,184,0.1);
+          border-color: rgba(148,163,184,0.3);
+          color: #94a3b8;
         }
 
         .device-selector-label {
