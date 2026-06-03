@@ -1,6 +1,8 @@
 // components/PrintModal.js
 import { useState, useEffect, useCallback } from "react";
+import { createPortal } from "react-dom";
 import { exportCsv } from "../lib/exportCsv";
+import { useTbAuth } from "../context/TbAuthContext";
 
 const VITAL_META = {
   ppgHeartRate: { label: "PPG Heart Rate", unit: "bpm", color: "#5B9BD5" },
@@ -38,6 +40,10 @@ function fmtDateRange(start, end) {
 }
 
 export default function PrintModal({ devices, onClose }) {
+  const { token } = useTbAuth();
+  const [mounted, setMounted] = useState(false);
+  useEffect(() => { setMounted(true); }, []);
+
   // ── State ──────────────────────────────────────────────────────────────
   const [selectedDeviceId, setSelectedDeviceId] = useState(devices[0]?.id || null);
   const [patient,   setPatient]   = useState(null);
@@ -74,11 +80,12 @@ export default function PrintModal({ devices, onClose }) {
     setLoading(true);
     const hours = (endTs - startTs) / 3600_000;
     const keys  = Object.entries(include).filter(([,v]) => v).map(([k]) => k);
+    const authHeaders = token ? { "x-tb-token": token } : {};
 
     try {
       const results = await Promise.all(
         keys.map(key =>
-          fetch(`/api/telemetry/history?deviceId=${selectedDeviceId}&key=${key}&hours=${hours.toFixed(4)}&limit=5000`)
+          fetch(`/api/telemetry/history?deviceId=${selectedDeviceId}&key=${key}&hours=${hours.toFixed(4)}&limit=5000`, { headers: authHeaders })
             .then(r => r.json())
             .then(j => [key, (j.series || []).filter(p => p.ts >= startTs && p.ts <= endTs)])
         )
@@ -90,7 +97,7 @@ export default function PrintModal({ devices, onClose }) {
     } finally {
       setLoading(false);
     }
-  }, [selectedDeviceId, startTs, endTs, include]);
+  }, [selectedDeviceId, startTs, endTs, include, token]);
 
   // ── Escape key ─────────────────────────────────────────────────────────
   useEffect(() => {
@@ -117,12 +124,12 @@ export default function PrintModal({ devices, onClose }) {
   // ── CSV Export ─────────────────────────────────────────────────────────
   const handleCsvExport = async () => {
     setCsvLoading(true);
-    const keys = Object.entries(include).filter(([,v]) => v).map(([k]) => k);
+    const keys = Object.entries(include).filter(([k, v]) => v && k !== "ecg").map(([k]) => k);
     await exportCsv({
       deviceId:    selectedDeviceId,
       deviceName:  selectedDevice?.name,
       patientName: patient?.patientName,
-      keys, startTs, endTs,
+      keys, startTs, endTs, token,
     });
     setCsvLoading(false);
   };
@@ -135,11 +142,9 @@ export default function PrintModal({ devices, onClose }) {
       {/* ── Print CSS injected globally ── */}
       <style>{`
         @media print {
-          body > * { display: none !important; }
-          #print-report { display: block !important; }
-          #print-report { position: fixed; inset: 0; background: white; z-index: 99999; padding: 0; }
+          body > *:not(#print-report) { display: none !important; }
+          #print-report { display: block !important; position: fixed; inset: 0; background: white; z-index: 99999; padding: 0; overflow: auto; }
           .print-page { padding: 24mm 20mm; font-family: Arial, sans-serif; }
-          .no-print { display: none !important; }
         }
         #print-report { display: none; }
       `}</style>
@@ -315,129 +320,129 @@ export default function PrintModal({ devices, onClose }) {
         </div>
       </div>
 
-      {/* ── Printable report (hidden until print) ── */}
-      <div id="print-report">
-        <div className="print-page">
-          {/* Report header */}
-          <div style={{ borderBottom:"2px solid #00c8ff", paddingBottom:12, marginBottom:20, display:"flex", justifyContent:"space-between", alignItems:"flex-end" }}>
-            <div>
-              <div style={{ fontSize:22, fontWeight:700, color:"#00c8ff", letterSpacing:"0.06em" }}>VITALSYNC</div>
-              <div style={{ fontSize:11, color:"#64748b", marginTop:2 }}>Health Monitoring System — Patient Report</div>
-            </div>
-            <div style={{ fontSize:11, color:"#64748b", textAlign:"right" }}>
-              <div>Printed: {new Date().toLocaleString()}</div>
-              <div>Device: {selectedDevice?.patientName ? `${selectedDevice.patientName} (${selectedDevice.name})` : (selectedDevice?.name || "—")}</div>
-            </div>
-          </div>
-
-          {/* Patient info */}
-          {patient && (
-            <div style={{ background:"#f8fafc", borderRadius:8, padding:"12px 16px", marginBottom:20, border:"1px solid #e2e8f0" }}>
-              <div style={{ fontSize:12, fontWeight:700, letterSpacing:"0.08em", color:"#64748b", marginBottom:10 }}>PATIENT INFORMATION</div>
-              <div style={{ display:"grid", gridTemplateColumns:"repeat(4,1fr)", gap:10 }}>
-                {[
-                  ["Name",       patient.patientName],
-                  ["Patient ID", patient.patientId],
-                  ["Ward",       patient.ward],
-                  ["Physician",  patient.physician],
-                  ["Age",        patient.age ? `${patient.age} yr` : null],
-                  ["Gender",     patient.gender],
-                  ["Blood Type", patient.bloodType],
-                  ["Weight",     patient.weight ? `${patient.weight} kg` : null],
-                ].map(([lbl, val]) => val ? (
-                  <div key={lbl}>
-                    <div style={{ fontSize:9, fontWeight:700, letterSpacing:"0.1em", color:"#94a3b8" }}>{lbl.toUpperCase()}</div>
-                    <div style={{ fontSize:13, fontWeight:600, color:"#1e293b", marginTop:2 }}>{val}</div>
-                  </div>
-                ) : null)}
+      {/* ── Printable report — portalled to <body> so print CSS can isolate it ── */}
+      {mounted && createPortal(
+        <div id="print-report">
+          <div className="print-page">
+            {/* Report header */}
+            <div style={{ borderBottom:"2px solid #00c8ff", paddingBottom:12, marginBottom:20, display:"flex", justifyContent:"space-between", alignItems:"flex-end" }}>
+              <div>
+                <div style={{ fontSize:22, fontWeight:700, color:"#00c8ff", letterSpacing:"0.06em" }}>VITALSYNC</div>
+                <div style={{ fontSize:11, color:"#64748b", marginTop:2 }}>Health Monitoring System — Patient Report</div>
+              </div>
+              <div style={{ fontSize:11, color:"#64748b", textAlign:"right" }}>
+                <div>Printed: {new Date().toLocaleString()}</div>
+                <div>Device: {selectedDevice?.patientName ? `${selectedDevice.patientName} (${selectedDevice.name})` : (selectedDevice?.name || "—")}</div>
               </div>
             </div>
-          )}
 
-          {/* Date range */}
-          <div style={{ fontSize:11, color:"#64748b", marginBottom:20 }}>
-            <strong>Report Period:</strong> {fmtDateRange(startTs, endTs)}
-          </div>
-
-          {/* Vital stats table */}
-          {Object.keys(data).some(k => ["ppgHeartRate","ecgHeartRate","spo2","temperature"].includes(k)) && (
-            <div style={{ marginBottom:24 }}>
-              <div style={{ fontSize:12, fontWeight:700, letterSpacing:"0.08em", color:"#64748b", marginBottom:10 }}>VITAL SIGNS SUMMARY</div>
-              <table style={{ width:"100%", borderCollapse:"collapse", fontSize:12 }}>
-                <thead>
-                  <tr style={{ background:"#f1f5f9" }}>
-                    {["Vital","Unit","Avg","Min","Max","Data Points","Status (Avg)"].map(h => (
-                      <th key={h} style={{ padding:"8px 10px", textAlign:"left", fontSize:10, fontWeight:700, letterSpacing:"0.06em", color:"#64748b", border:"1px solid #e2e8f0" }}>{h}</th>
-                    ))}
-                  </tr>
-                </thead>
-                <tbody>
-                  {["ppgHeartRate","ecgHeartRate","spo2","temperature"].map(key => {
-                    const series = data[key];
-                    if (!series) return null;
-                    const s    = stats(series);
-                    const meta = VITAL_META[key];
-                    const st   = getStatus(key, parseFloat(s.avg));
-                    const stColor = st==="CRITICAL"?"#ef4444":st==="WARNING"?"#f59e0b":"#22c55e";
-                    return (
-                      <tr key={key}>
-                        <td style={{ padding:"8px 10px", fontWeight:600, border:"1px solid #e2e8f0" }}>{meta.label}</td>
-                        <td style={{ padding:"8px 10px", color:"#64748b", border:"1px solid #e2e8f0" }}>{meta.unit}</td>
-                        <td style={{ padding:"8px 10px", fontWeight:700, color:meta.color, border:"1px solid #e2e8f0" }}>{s.avg}</td>
-                        <td style={{ padding:"8px 10px", border:"1px solid #e2e8f0" }}>{s.min}</td>
-                        <td style={{ padding:"8px 10px", border:"1px solid #e2e8f0" }}>{s.max}</td>
-                        <td style={{ padding:"8px 10px", border:"1px solid #e2e8f0" }}>{s.count.toLocaleString()}</td>
-                        <td style={{ padding:"8px 10px", fontWeight:700, color:stColor, border:"1px solid #e2e8f0" }}>● {st}</td>
-                      </tr>
-                    );
-                  })}
-                </tbody>
-              </table>
-            </div>
-          )}
-
-          {/* ECG summary */}
-          {data.ecg && (
-            <div style={{ marginBottom:24 }}>
-              <div style={{ fontSize:12, fontWeight:700, letterSpacing:"0.08em", color:"#64748b", marginBottom:10 }}>SIGNAL DATA SUMMARY</div>
-              <table style={{ width:"100%", borderCollapse:"collapse", fontSize:12 }}>
-                <thead>
-                  <tr style={{ background:"#f1f5f9" }}>
-                    {["Signal","Unit","Avg","Min","Max","Data Points"].map(h => (
-                      <th key={h} style={{ padding:"8px 10px", textAlign:"left", fontSize:10, fontWeight:700, letterSpacing:"0.06em", color:"#64748b", border:"1px solid #e2e8f0" }}>{h}</th>
-                    ))}
-                  </tr>
-                </thead>
-                <tbody>
+            {/* Patient info */}
+            {patient && (
+              <div style={{ background:"#f8fafc", borderRadius:8, padding:"12px 16px", marginBottom:20, border:"1px solid #e2e8f0" }}>
+                <div style={{ fontSize:12, fontWeight:700, letterSpacing:"0.08em", color:"#64748b", marginBottom:10 }}>PATIENT INFORMATION</div>
+                <div style={{ display:"grid", gridTemplateColumns:"repeat(4,1fr)", gap:10 }}>
                   {[
-                    { key:"ecg", label:"ECG Signal", unit:"µV", color:"#FF96B7" },
-                  ].map(({ key, label, unit, color }) => {
-                    const series = data[key];
-                    if (!series) return null;
-                    const s = stats(series);
-                    return (
-                      <tr key={key}>
-                        <td style={{ padding:"8px 10px", fontWeight:600, border:"1px solid #e2e8f0" }}>{label}</td>
-                        <td style={{ padding:"8px 10px", color:"#64748b", border:"1px solid #e2e8f0" }}>{unit}</td>
-                        <td style={{ padding:"8px 10px", fontWeight:700, color, border:"1px solid #e2e8f0" }}>{s.avg}</td>
-                        <td style={{ padding:"8px 10px", border:"1px solid #e2e8f0" }}>{s.min}</td>
-                        <td style={{ padding:"8px 10px", border:"1px solid #e2e8f0" }}>{s.max}</td>
-                        <td style={{ padding:"8px 10px", border:"1px solid #e2e8f0" }}>{s.count.toLocaleString()}</td>
-                      </tr>
-                    );
-                  })}
-                </tbody>
-              </table>
-            </div>
-          )}
+                    ["Name",       patient.patientName],
+                    ["Patient ID", patient.patientId],
+                    ["Ward",       patient.ward],
+                    ["Physician",  patient.physician],
+                    ["Age",        patient.age ? `${patient.age} yr` : null],
+                    ["Gender",     patient.gender],
+                    ["Blood Type", patient.bloodType],
+                    ["Weight",     patient.weight ? `${patient.weight} kg` : null],
+                  ].map(([lbl, val]) => val ? (
+                    <div key={lbl}>
+                      <div style={{ fontSize:9, fontWeight:700, letterSpacing:"0.1em", color:"#94a3b8" }}>{lbl.toUpperCase()}</div>
+                      <div style={{ fontSize:13, fontWeight:600, color:"#1e293b", marginTop:2 }}>{val}</div>
+                    </div>
+                  ) : null)}
+                </div>
+              </div>
+            )}
 
-          {/* Footer */}
-          <div style={{ borderTop:"1px solid #e2e8f0", paddingTop:10, marginTop:20, fontSize:10, color:"#94a3b8", display:"flex", justifyContent:"space-between" }}>
-            <span>VitalSync Health Monitoring System</span>
-            <span>This report is generated automatically and should be reviewed by a qualified physician.</span>
+            {/* Date range */}
+            <div style={{ fontSize:11, color:"#64748b", marginBottom:20 }}>
+              <strong>Report Period:</strong> {fmtDateRange(startTs, endTs)}
+            </div>
+
+            {/* Vital stats table */}
+            {Object.keys(data).some(k => ["ppgHeartRate","ecgHeartRate","spo2","temperature"].includes(k)) && (
+              <div style={{ marginBottom:24 }}>
+                <div style={{ fontSize:12, fontWeight:700, letterSpacing:"0.08em", color:"#64748b", marginBottom:10 }}>VITAL SIGNS SUMMARY</div>
+                <table style={{ width:"100%", borderCollapse:"collapse", fontSize:12 }}>
+                  <thead>
+                    <tr style={{ background:"#f1f5f9" }}>
+                      {["Vital","Unit","Avg","Min","Max","Data Points","Status (Avg)"].map(h => (
+                        <th key={h} style={{ padding:"8px 10px", textAlign:"left", fontSize:10, fontWeight:700, letterSpacing:"0.06em", color:"#64748b", border:"1px solid #e2e8f0" }}>{h}</th>
+                      ))}
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {["ppgHeartRate","ecgHeartRate","spo2","temperature"].map(key => {
+                      const series = data[key];
+                      if (!series) return null;
+                      const s    = stats(series);
+                      const meta = VITAL_META[key];
+                      const st   = getStatus(key, parseFloat(s.avg));
+                      const stColor = st==="CRITICAL"?"#ef4444":st==="WARNING"?"#f59e0b":"#22c55e";
+                      return (
+                        <tr key={key}>
+                          <td style={{ padding:"8px 10px", fontWeight:600, border:"1px solid #e2e8f0" }}>{meta.label}</td>
+                          <td style={{ padding:"8px 10px", color:"#64748b", border:"1px solid #e2e8f0" }}>{meta.unit}</td>
+                          <td style={{ padding:"8px 10px", fontWeight:700, color:meta.color, border:"1px solid #e2e8f0" }}>{s.avg}</td>
+                          <td style={{ padding:"8px 10px", border:"1px solid #e2e8f0" }}>{s.min}</td>
+                          <td style={{ padding:"8px 10px", border:"1px solid #e2e8f0" }}>{s.max}</td>
+                          <td style={{ padding:"8px 10px", border:"1px solid #e2e8f0" }}>{s.count.toLocaleString()}</td>
+                          <td style={{ padding:"8px 10px", fontWeight:700, color:stColor, border:"1px solid #e2e8f0" }}>● {st}</td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              </div>
+            )}
+
+            {/* ECG signal summary (print only — not in CSV) */}
+            {data.ecg && (
+              <div style={{ marginBottom:24 }}>
+                <div style={{ fontSize:12, fontWeight:700, letterSpacing:"0.08em", color:"#64748b", marginBottom:10 }}>SIGNAL DATA SUMMARY</div>
+                <table style={{ width:"100%", borderCollapse:"collapse", fontSize:12 }}>
+                  <thead>
+                    <tr style={{ background:"#f1f5f9" }}>
+                      {["Signal","Unit","Avg","Min","Max","Data Points"].map(h => (
+                        <th key={h} style={{ padding:"8px 10px", textAlign:"left", fontSize:10, fontWeight:700, letterSpacing:"0.06em", color:"#64748b", border:"1px solid #e2e8f0" }}>{h}</th>
+                      ))}
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {(() => {
+                      const series = data.ecg;
+                      const s = stats(series);
+                      return (
+                        <tr>
+                          <td style={{ padding:"8px 10px", fontWeight:600, border:"1px solid #e2e8f0" }}>ECG Signal</td>
+                          <td style={{ padding:"8px 10px", color:"#64748b", border:"1px solid #e2e8f0" }}>µV</td>
+                          <td style={{ padding:"8px 10px", fontWeight:700, color:"#FF96B7", border:"1px solid #e2e8f0" }}>{s.avg}</td>
+                          <td style={{ padding:"8px 10px", border:"1px solid #e2e8f0" }}>{s.min}</td>
+                          <td style={{ padding:"8px 10px", border:"1px solid #e2e8f0" }}>{s.max}</td>
+                          <td style={{ padding:"8px 10px", border:"1px solid #e2e8f0" }}>{s.count.toLocaleString()}</td>
+                        </tr>
+                      );
+                    })()}
+                  </tbody>
+                </table>
+              </div>
+            )}
+
+            {/* Footer */}
+            <div style={{ borderTop:"1px solid #e2e8f0", paddingTop:10, marginTop:20, fontSize:10, color:"#94a3b8", display:"flex", justifyContent:"space-between" }}>
+              <span>VitalSync Health Monitoring System</span>
+              <span>This report is generated automatically and should be reviewed by a qualified physician.</span>
+            </div>
           </div>
-        </div>
-      </div>
+        </div>,
+        document.body
+      )}
     </>
   );
 }
