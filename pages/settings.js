@@ -38,7 +38,7 @@ const DEFAULT_PPG_SAMPLE_FREQ     = 100;  // Hz — MAX30102 sample rate
 const DEFAULT_PPG_RED_LED_MA      = 6;    // mA — red LED drive current
 const DEFAULT_PPG_IR_LED_MA       = 6;    // mA — IR LED drive current
 
-const ECG_FREQ_OPTIONS = [125, 250, 500, 1000];
+const ECG_FREQ_PRESETS = [100, 250, 500, 750, 1000];
 const PPG_FREQ_OPTIONS = [50, 100, 200, 400, 800, 1000];
 
 // ── Settings page ────────────────────────────────────────────────────────────
@@ -373,15 +373,15 @@ export default function Settings() {
               <div className="interval-row">
                 <input
                   type="range"
-                  min={0} max={ECG_FREQ_OPTIONS.length - 1} step={1}
-                  value={ECG_FREQ_OPTIONS.indexOf(ecgSampleFreq) === -1 ? 1 : ECG_FREQ_OPTIONS.indexOf(ecgSampleFreq)}
-                  onChange={e => setEcgSampleFreq(ECG_FREQ_OPTIONS[Number(e.target.value)])}
+                  min={50} max={1000} step={50}
+                  value={ecgSampleFreq}
+                  onChange={e => setEcgSampleFreq(Number(e.target.value))}
                   className="interval-slider"
                 />
                 <span className="interval-value">{ecgSampleFreq} Hz</span>
               </div>
               <div className="interval-presets">
-                {ECG_FREQ_OPTIONS.map(hz => (
+                {ECG_FREQ_PRESETS.map(hz => (
                   <button
                     key={hz}
                     className={`preset-btn ${ecgSampleFreq === hz ? "preset-btn--active" : ""}`}
