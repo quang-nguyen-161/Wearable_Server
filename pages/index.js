@@ -1175,40 +1175,9 @@ export default function Dashboard() {
               );
             })}
 
-          {/* ECG controls row — ON/OFF toggle + Y-axis min/max inputs */}
+          {/* ECG controls row — ON/OFF toggle */}
           {selectedDeviceId && (
-            <div style={{ display: "flex", alignItems: "center", gap: 10, padding: "0 2px 2px", flexWrap: "wrap", justifyContent: "flex-end" }}>
-              {/* Y-axis range inputs */}
-              <div style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 11, color: "var(--text-muted, #94a3b8)" }}>
-                <span style={{ fontWeight: 700, letterSpacing: "0.06em" }}>Y RANGE</span>
-                <input
-                  type="number"
-                  value={ecgYMin}
-                  onChange={e => { const v = Number(e.target.value); if (!isNaN(v)) setEcgYMin(v); }}
-                  style={{
-                    width: 72, padding: "3px 7px", borderRadius: 6,
-                    border: "1px solid var(--border, #e2e8f0)",
-                    background: "var(--bg-card, #fff)", color: "var(--text-primary, #2c3e50)",
-                    fontSize: 11, fontFamily: "inherit", textAlign: "right",
-                  }}
-                  placeholder="Min"
-                />
-                <span style={{ opacity: 0.5 }}>—</span>
-                <input
-                  type="number"
-                  value={ecgYMax}
-                  onChange={e => { const v = Number(e.target.value); if (!isNaN(v)) setEcgYMax(v); }}
-                  style={{
-                    width: 72, padding: "3px 7px", borderRadius: 6,
-                    border: "1px solid var(--border, #e2e8f0)",
-                    background: "var(--bg-card, #fff)", color: "var(--text-primary, #2c3e50)",
-                    fontSize: 11, fontFamily: "inherit", textAlign: "right",
-                  }}
-                  placeholder="Max"
-                />
-              </div>
-
-              {/* ON/OFF toggle */}
+            <div style={{ display: "flex", alignItems: "center", gap: 10, padding: "0 2px 2px", justifyContent: "flex-end" }}>
               <button
                 onClick={() => handleToggleEcg(selectedDeviceId, ecgEnabledMap[selectedDeviceId] !== false)}
                 style={{
@@ -1244,12 +1213,12 @@ export default function Dashboard() {
                 </span>
                 <span className="chart-expand-hint">⤢ EXPAND</span>
               </div>
-              {/* Display window selector — stop propagation so clicks don't open modal */}
+              {/* Display window + zoom controls — stop propagation so clicks don't open modal */}
               <div
-                style={{ display: "flex", alignItems: "center", gap: 6, padding: "6px 0 8px", flexWrap: "wrap" }}
+                style={{ display: "flex", alignItems: "center", gap: 8, padding: "6px 0 8px", flexWrap: "wrap" }}
                 onClick={e => e.stopPropagation()}
               >
-                <span style={{ fontSize: 10, fontWeight: 700, letterSpacing: "0.1em", color: "var(--text-muted, #94a3b8)", marginRight: 2 }}>
+                <span style={{ fontSize: 10, fontWeight: 700, letterSpacing: "0.1em", color: "var(--text-muted, #94a3b8)" }}>
                   DISPLAY WINDOW
                 </span>
                 <div style={{ display: "flex", gap: 3, background: "var(--bg-void, #f1f5f9)", borderRadius: 7, padding: 2 }}>
@@ -1268,6 +1237,22 @@ export default function Dashboard() {
                       }}
                     >{w.label}</button>
                   ))}
+                </div>
+
+                {/* Y-axis zoom */}
+                <div style={{ display: "flex", alignItems: "center", gap: 4, marginLeft: 6 }}>
+                  <span style={{ fontSize: 10, fontWeight: 700, letterSpacing: "0.1em", color: "var(--text-muted, #94a3b8)" }}>ZOOM</span>
+                  <button
+                    onClick={() => { const h = Math.round(Math.abs(ecgYMax) * 1.5); setEcgYMin(-h); setEcgYMax(h); }}
+                    title="Zoom out"
+                    style={{ width: 24, height: 24, borderRadius: 5, border: "1px solid var(--border,#e2e8f0)", background: "var(--bg-void,#f1f5f9)", cursor: "pointer", fontSize: 15, lineHeight: 1, fontFamily: "inherit", color: "var(--text-muted,#94a3b8)", display: "flex", alignItems: "center", justifyContent: "center" }}
+                  >−</button>
+                  <span style={{ fontSize: 10, color: "var(--text-muted,#94a3b8)", minWidth: 44, textAlign: "center" }}>±{(ecgYMax/1000).toFixed(1)}k</span>
+                  <button
+                    onClick={() => { const h = Math.max(100, Math.round(Math.abs(ecgYMax) / 1.5)); setEcgYMin(-h); setEcgYMax(h); }}
+                    title="Zoom in"
+                    style={{ width: 24, height: 24, borderRadius: 5, border: "1px solid var(--border,#e2e8f0)", background: "var(--bg-void,#f1f5f9)", cursor: "pointer", fontSize: 15, lineHeight: 1, fontFamily: "inherit", color: "var(--text-muted,#94a3b8)", display: "flex", alignItems: "center", justifyContent: "center" }}
+                  >+</button>
                 </div>
               </div>
               <TrendChart
