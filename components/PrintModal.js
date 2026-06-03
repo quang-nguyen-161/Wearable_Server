@@ -50,7 +50,7 @@ export default function PrintModal({ devices, onClose }) {
   const [patient,   setPatient]   = useState(null);
   const [startTs,   setStartTs]   = useState(Date.now() - 3600_000);
   const [endTs,     setEndTs]     = useState(Date.now());
-  const [include,   setInclude]   = useState({ ppgHeartRate:true, ecgHeartRate:true, spo2:true, temperature:true, ecg:true });
+  const [include,   setInclude]   = useState({ ppgHeartRate:true, ecgHeartRate:true, spo2:true, temperature:true });
   const [data,      setData]      = useState({});   // { ppgHeartRate: [{ts,value}], ... }
   const [loading,   setLoading]   = useState(false);
   const [csvLoading,setCsvLoading]= useState(false);
@@ -123,7 +123,7 @@ export default function PrintModal({ devices, onClose }) {
   // ── CSV Export ─────────────────────────────────────────────────────────
   const handleCsvExport = async () => {
     setCsvLoading(true);
-    const keys = Object.entries(include).filter(([k, v]) => v && k !== "ecg").map(([k]) => k);
+    const keys = Object.entries(include).filter(([, v]) => v).map(([k]) => k);
     await exportCsv({
       deviceId:    selectedDeviceId,
       deviceName:  selectedDevice?.name,
@@ -251,7 +251,6 @@ export default function PrintModal({ devices, onClose }) {
                   { key:"ecgHeartRate", label:"ECG Heart Rate", icon:"💓" },
                   { key:"spo2",         label:"SpO₂",           icon:"💧" },
                   { key:"temperature",  label:"Temperature",    icon:"🌡" },
-                  { key:"ecg",          label:"ECG Signal",     icon:"〜" },
                 ].map(({ key, label, icon }) => (
                   <button key={key} onClick={() => { setInclude(prev => ({...prev, [key]:!prev[key]})); setFetched(false); }} style={{
                     display:"flex", alignItems:"center", gap:6,
@@ -396,38 +395,6 @@ export default function PrintModal({ devices, onClose }) {
                         </tr>
                       );
                     })}
-                  </tbody>
-                </table>
-              </div>
-            )}
-
-            {/* ECG signal summary (print only — not in CSV) */}
-            {data.ecg && (
-              <div style={{ marginBottom:24 }}>
-                <div style={{ fontSize:12, fontWeight:700, letterSpacing:"0.08em", color:"#64748b", marginBottom:10 }}>SIGNAL DATA SUMMARY</div>
-                <table style={{ width:"100%", borderCollapse:"collapse", fontSize:12 }}>
-                  <thead>
-                    <tr style={{ background:"#f1f5f9" }}>
-                      {["Signal","Unit","Avg","Min","Max","Data Points"].map(h => (
-                        <th key={h} style={{ padding:"8px 10px", textAlign:"left", fontSize:10, fontWeight:700, letterSpacing:"0.06em", color:"#64748b", border:"1px solid #e2e8f0" }}>{h}</th>
-                      ))}
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {(() => {
-                      const series = data.ecg;
-                      const s = stats(series);
-                      return (
-                        <tr>
-                          <td style={{ padding:"8px 10px", fontWeight:600, border:"1px solid #e2e8f0" }}>ECG Signal</td>
-                          <td style={{ padding:"8px 10px", color:"#64748b", border:"1px solid #e2e8f0" }}>µV</td>
-                          <td style={{ padding:"8px 10px", fontWeight:700, color:"#FF96B7", border:"1px solid #e2e8f0" }}>{s.avg}</td>
-                          <td style={{ padding:"8px 10px", border:"1px solid #e2e8f0" }}>{s.min}</td>
-                          <td style={{ padding:"8px 10px", border:"1px solid #e2e8f0" }}>{s.max}</td>
-                          <td style={{ padding:"8px 10px", border:"1px solid #e2e8f0" }}>{s.count.toLocaleString()}</td>
-                        </tr>
-                      );
-                    })()}
                   </tbody>
                 </table>
               </div>
