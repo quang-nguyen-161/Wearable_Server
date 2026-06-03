@@ -1,5 +1,5 @@
 // components/TrendChart.js
-import { useState, useRef, useEffect } from "react";
+import { useState } from "react";
 import {
   ResponsiveContainer, AreaChart, Area,
   XAxis, YAxis, CartesianGrid, Tooltip, ReferenceLine,
@@ -71,7 +71,7 @@ const CustomTooltip = ({ active, payload, label, metricKey }) => {
 };
 
 // ── Main component ────────────────────────────────────────────────────────
-export default function TrendChart({ series, metricKey, loading, hideControls = false, isLiveWaveform = false, stroke, sampleFreqHz = 250, height = 220 }) {
+export default function TrendChart({ series, metricKey, loading, hideControls = false, isLiveWaveform = false, stroke, sampleFreqHz = 250, height = 220, liveWindowSec = 5 }) {
 
   // Live waveform mode — high-performance, no animation, no controls
   if (isLiveWaveform) {
@@ -79,7 +79,7 @@ export default function TrendChart({ series, metricKey, loading, hideControls = 
     if (!series || series.length === 0) {
       return (
         <div style={{
-          height: 220, display: "flex", alignItems: "center", justifyContent: "center",
+          height, display: "flex", alignItems: "center", justifyContent: "center",
           fontFamily: "Share Tech Mono, monospace", fontSize: "0.72rem",
           color: "rgba(120,160,200,0.4)", letterSpacing: "0.08em",
         }}>
@@ -87,12 +87,11 @@ export default function TrendChart({ series, metricKey, loading, hideControls = 
         </div>
       );
     }
-    // Show last 5s; cap display points to avoid SVG perf issues but preserve detail
-    const LIVE_WINDOW_MS = 5000;
-    const MAX_DISPLAY    = Math.min(1000, Math.ceil(sampleFreqHz * 5));
-    const latestTs   = series[series.length - 1].ts;
-    const windowed   = series.filter(d => d.ts >= latestTs - LIVE_WINDOW_MS);
-    const step       = Math.max(1, Math.floor(windowed.length / MAX_DISPLAY));
+    const windowMs    = liveWindowSec * 1000;
+    const MAX_DISPLAY = Math.min(4000, Math.ceil(sampleFreqHz * liveWindowSec));
+    const latestTs    = series[series.length - 1].ts;
+    const windowed    = series.filter(d => d.ts >= latestTs - windowMs);
+    const step        = Math.max(1, Math.floor(windowed.length / MAX_DISPLAY));
     const liveDisplay = step > 1 ? windowed.filter((_, i) => i % step === 0) : windowed;
 
     const liveVals  = liveDisplay.map(d => d.value);
@@ -100,6 +99,15 @@ export default function TrendChart({ series, metricKey, loading, hideControls = 
     const liveMax   = liveVals.length ? Math.max(...liveVals) : 1;
     const livePad   = (liveMax - liveMin) * 0.12 || 50;
     const liveDomain = [Math.round(liveMin - livePad), Math.round(liveMax + livePad)];
+
+    // Compute tick interval: snap to a nice value, min 1s, targeting ~5 ticks
+    const rawIntervalMs = windowMs / 5;
+    const NICE_MS = [1000,2000,5000,10000,15000,30000,60000];
+    const tickIntervalMs = NICE_MS.find(n => n >= rawIntervalMs) || 60000;
+    const domainStart = latestTs - windowMs;
+    const firstTick   = Math.ceil(domainStart / tickIntervalMs) * tickIntervalMs;
+    const xTicks = [];
+    for (let t = firstTick; t <= latestTs; t += tickIntervalMs) xTicks.push(t);
 
     const fmtTs = (ts) => new Date(ts).toLocaleTimeString("en-US", {
       hour: "2-digit", minute: "2-digit", second: "2-digit", hour12: false,
@@ -112,13 +120,12 @@ export default function TrendChart({ series, metricKey, loading, hideControls = 
             dataKey="ts"
             type="number"
             scale="time"
-            domain={["dataMin", "dataMax"]}
+            domain={[domainStart, latestTs]}
+            ticks={xTicks}
             tickFormatter={fmtTs}
             tick={{ fill: "rgba(120,160,200,0.45)", fontSize: 9, fontFamily: "Share Tech Mono, monospace" }}
             tickLine={false}
             axisLine={false}
-            tickCount={5}
-            interval="preserveStartEnd"
           />
           <YAxis
             domain={liveDomain}
@@ -146,21 +153,6 @@ export default function TrendChart({ series, metricKey, loading, hideControls = 
 
   // Default: 10s for signals, 60 pts for vitals
   const [windowIdx, setWindowIdx] = useState(isSignal ? 2 : 1);
-  const [showPanel, setShowPanel] = useState(false);
-  const panelRef   = useRef(null);
-  const btnRef     = useRef(null);
-
-  // Close panel on outside click
-  useEffect(() => {
-    if (!showPanel) return;
-    const handler = (e) => {
-      if (!panelRef.current?.contains(e.target) && !btnRef.current?.contains(e.target)) {
-        setShowPanel(false);
-      }
-    };
-    document.addEventListener("mousedown", handler);
-    return () => document.removeEventListener("mousedown", handler);
-  }, [showPanel]);
 
   const color = COLOR_MAP[metricKey] || "#00c8ff";
   const range = NORMAL_RANGES[metricKey];
@@ -203,86 +195,6 @@ export default function TrendChart({ series, metricKey, loading, hideControls = 
 
   return (
     <div style={{ position: "relative" }}>
-
-      {/* ── Settings button ── */}
-      {!hideControls && (
-      <button
-        ref={btnRef}
-        onClick={() => setShowPanel(v => !v)}
-        title="Display window settings"
-        style={{
-          position: "absolute", top: 4, right: 4, zIndex: 10,
-          display: "flex", alignItems: "center", gap: 4,
-          background: showPanel ? `${color}18` : "transparent",
-          border: `1px solid ${showPanel ? color : "transparent"}`,
-          borderRadius: 6, padding: "3px 8px",
-          cursor: "pointer", fontSize: 10, fontWeight: 700,
-          letterSpacing: "0.06em",
-          color: showPanel ? color : "rgba(120,160,200,0.6)",
-          transition: "all 0.15s",
-          fontFamily: "Share Tech Mono, monospace",
-        }}
-      >
-        ⚙ {selectedWindow.label}
-      </button>
-      )}
-
-      {/* ── Settings panel ── */}
-      {!hideControls && showPanel && (
-        <div
-          ref={panelRef}
-          style={{
-            position: "absolute", top: 28, right: 4, zIndex: 20,
-            background: "var(--bg-card, #fff)",
-            border: `1.5px solid ${color}`,
-            borderRadius: 10,
-            padding: "10px 12px",
-            boxShadow: "0 8px 24px rgba(0,0,0,0.12)",
-            minWidth: 160,
-          }}
-        >
-          <div style={{
-            fontSize: 9, fontWeight: 700, letterSpacing: "0.1em",
-            color: "rgba(120,160,200,0.7)", marginBottom: 8,
-          }}>
-            {isSignal ? "TIME WINDOW" : "POINT COUNT"}
-          </div>
-          <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
-            {windows.map((w, i) => (
-              <button
-                key={w.label}
-                onClick={() => { setWindowIdx(i); setShowPanel(false); }}
-                style={{
-                  display: "flex", alignItems: "center", justifyContent: "space-between",
-                  padding: "6px 10px", borderRadius: 7,
-                  border: "none", cursor: "pointer",
-                  background: windowIdx === i ? `${color}18` : "transparent",
-                  color: windowIdx === i ? color : "var(--text-primary, #2c3e50)",
-                  fontWeight: windowIdx === i ? 700 : 500,
-                  fontSize: 12, fontFamily: "inherit",
-                  transition: "background 0.12s",
-                }}
-              >
-                <span>{w.label}</span>
-                {windowIdx === i && (
-                  <span style={{ fontSize: 10, opacity: 0.7 }}>✓</span>
-                )}
-              </button>
-            ))}
-          </div>
-
-          {isSignal && (
-            <div style={{
-              marginTop: 10, paddingTop: 8,
-              borderTop: "1px solid rgba(120,160,200,0.15)",
-              fontSize: 10, color: "rgba(120,160,200,0.6)",
-              lineHeight: 1.4,
-            }}>
-              Showing last {selectedWindow.label} of live data
-            </div>
-          )}
-        </div>
-      )}
 
       {/* ── Chart ── */}
       <ResponsiveContainer width="100%" height={220}>

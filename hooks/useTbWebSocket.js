@@ -11,10 +11,11 @@ const FLUSH_MS  = 16;    // ~60fps render rate
 export function useTbWebSocket(deviceId, tbToken, ecgSampleFreq = 250) {
   // Updated whenever ecgSampleFreq prop changes — refs keep handleMessage/flushLoop stable
   const sampleIntervalMsRef = useRef(Math.round(1000 / ecgSampleFreq));
-  const maxPointsRef        = useRef(Math.max(1500, ecgSampleFreq * 10));
+  // Buffer 65s so the 60s display window always has data; cap at 20k to avoid memory pressure
+  const maxPointsRef        = useRef(Math.min(20000, Math.max(1500, ecgSampleFreq * 65)));
   useEffect(() => {
     sampleIntervalMsRef.current = Math.round(1000 / ecgSampleFreq);
-    maxPointsRef.current        = Math.max(1500, ecgSampleFreq * 10);
+    maxPointsRef.current        = Math.min(20000, Math.max(1500, ecgSampleFreq * 65));
   }, [ecgSampleFreq]);
 
   const wsRef       = useRef(null);

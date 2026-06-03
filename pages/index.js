@@ -66,7 +66,15 @@ const SIGNAL_META = {
   ppg: { label: "PPG SIGNAL", color: "#70AD47", unit: "a.u." },
 };
 
-function SignalModal({ signalKey, series, sampleFreqHz = 250, onClose }) {
+const SIGNAL_WINDOWS = [
+  { label: "3s",  value: 3  },
+  { label: "5s",  value: 5  },
+  { label: "10s", value: 10 },
+  { label: "30s", value: 30 },
+  { label: "60s", value: 60 },
+];
+
+function SignalModal({ signalKey, series, sampleFreqHz = 250, windowSec = 10, onClose }) {
   const meta = SIGNAL_META[signalKey];
 
   useEffect(() => {
@@ -75,7 +83,10 @@ function SignalModal({ signalKey, series, sampleFreqHz = 250, onClose }) {
     return () => window.removeEventListener("keydown", fn);
   }, [onClose]);
 
-  const pointCount  = series?.length ?? 0;
+  const latestTs    = series?.length ? series[series.length - 1].ts : Date.now();
+  const displayData = (series || []).filter(d => d.ts >= latestTs - windowSec * 1000);
+  const pointCount  = displayData.length;
+  const effectiveHz = pointCount > 0 ? Math.round(pointCount / windowSec) : 0;
 
   return (
     <div
@@ -119,7 +130,7 @@ function SignalModal({ signalKey, series, sampleFreqHz = 250, onClose }) {
                 {meta.label}
               </div>
               <div style={{ fontSize: 11, color: "var(--text-muted, #94a3b8)", marginTop: 2 }}>
-                Live · WebSocket · {pointCount} pts · {sampleFreqHz} Hz
+                Live · WebSocket · {pointCount} pts · ~{effectiveHz} Hz · last {windowSec}s
               </div>
             </div>
           </div>
@@ -130,7 +141,7 @@ function SignalModal({ signalKey, series, sampleFreqHz = 250, onClose }) {
           }}>×</button>
         </div>
 
-        {/* Large chart — same live waveform renderer as the main chart */}
+        {/* Large chart — no controls, window matches main page selection */}
         <div style={{ padding: "16px 20px 24px" }}>
           <TrendChart
             series={series}
@@ -139,6 +150,7 @@ function SignalModal({ signalKey, series, sampleFreqHz = 250, onClose }) {
             isLiveWaveform={true}
             stroke={meta.color}
             sampleFreqHz={sampleFreqHz}
+            liveWindowSec={windowSec}
             height={360}
           />
         </div>
@@ -677,6 +689,7 @@ export default function Dashboard() {
   const [vitalModal,       setVitalModal]       = useState(null);
   const [patientModal,     setPatientModal]     = useState(false);
   const [signalModal,      setSignalModal]      = useState(null);
+  const [ecgWindowSec,     setEcgWindowSec]     = useState(10);
   const [printModal,       setPrintModal]       = useState(false);
   const [otaModal,         setOtaModal]         = useState(false);
   const [overviewModal,    setOverviewModal]    = useState(false);
@@ -1120,6 +1133,32 @@ export default function Dashboard() {
                 </span>
                 <span className="chart-expand-hint">⤢ EXPAND</span>
               </div>
+              {/* Display window selector — stop propagation so clicks don't open modal */}
+              <div
+                style={{ display: "flex", alignItems: "center", gap: 6, padding: "6px 0 8px", flexWrap: "wrap" }}
+                onClick={e => e.stopPropagation()}
+              >
+                <span style={{ fontSize: 10, fontWeight: 700, letterSpacing: "0.1em", color: "var(--text-muted, #94a3b8)", marginRight: 2 }}>
+                  DISPLAY WINDOW
+                </span>
+                <div style={{ display: "flex", gap: 3, background: "var(--bg-void, #f1f5f9)", borderRadius: 7, padding: 2 }}>
+                  {SIGNAL_WINDOWS.map(w => (
+                    <button
+                      key={w.label}
+                      onClick={() => setEcgWindowSec(w.value)}
+                      style={{
+                        fontSize: 11, fontWeight: 700, padding: "4px 10px",
+                        borderRadius: 5, border: "none", cursor: "pointer",
+                        fontFamily: "inherit",
+                        background: ecgWindowSec === w.value ? "var(--bg-card, #fff)" : "transparent",
+                        color: ecgWindowSec === w.value ? "var(--green, #70AD47)" : "var(--text-muted, #94a3b8)",
+                        boxShadow: ecgWindowSec === w.value ? "0 1px 3px rgba(0,0,0,0.1)" : "none",
+                        transition: "all 0.12s",
+                      }}
+                    >{w.label}</button>
+                  ))}
+                </div>
+              </div>
               <TrendChart
                 series={ecgData}
                 metricKey="ecg"
@@ -1127,6 +1166,7 @@ export default function Dashboard() {
                 isLiveWaveform={true}
                 stroke="var(--green)"
                 sampleFreqHz={settings.ecgSampleFreq}
+                liveWindowSec={ecgWindowSec}
               />
             </div>
           )}
@@ -1172,6 +1212,7 @@ export default function Dashboard() {
           signalKey={signalModal.key}
           series={ecgData}
           sampleFreqHz={settings.ecgSampleFreq}
+          windowSec={ecgWindowSec}
           onClose={() => setSignalModal(null)}
         />
       )}
