@@ -2,6 +2,7 @@
 // OTA via ESP32 → UART → nRF52832 Central → BLE DFU → nRF52832 Peripheral node
 
 import { useState, useEffect, useRef } from "react";
+import { useTbAuth } from "../context/TbAuthContext";
 
 const STATUS_META = {
   idle:     { color:"#94a3b8", icon:"○", label:"Ready"    },
@@ -12,6 +13,7 @@ const STATUS_META = {
 };
 
 export default function OtaModal({ devices, onClose }) {
+  const { token } = useTbAuth();
   const [selectedDevice, setSelectedDevice] = useState(devices[0] || null);
   const [binFile,        setBinFile]        = useState(null);
   const [binUrl,         setBinUrl]         = useState("");
@@ -34,8 +36,9 @@ export default function OtaModal({ devices, onClose }) {
 
   const pollStatus = async () => {
     if (!selectedDevice) return;
+    const authHeaders = token ? { "x-tb-token": token } : {};
     try {
-      const res  = await fetch(`/api/telemetry/latest?deviceId=${selectedDevice.id}`);
+      const res  = await fetch(`/api/telemetry/latest?deviceId=${selectedDevice.id}`, { headers: authHeaders });
       const json = await res.json();
       const d    = json.data || {};
       if (!d.otaStatus) return;

@@ -8,8 +8,10 @@ export default async function handler(req, res) {
   const deviceId = req.query.deviceId || process.env.TB_DEVICE_ID || null;
   if (!deviceId) return res.status(400).json({ error: "Missing deviceId", info: null });
 
+  const forwardedToken = req.headers["x-tb-token"] || null;
+
   try {
-    const info = await getPatientInfo(deviceId);
+    const info = await getPatientInfo(deviceId, forwardedToken);
     return res.status(200).json({ info });
   } catch (err) {
     console.error("[patient] Error:", err.message);

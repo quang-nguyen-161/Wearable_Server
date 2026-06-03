@@ -4,6 +4,7 @@
 
 import { useState, useEffect, useCallback } from "react";
 import TrendChart from "./TrendChart";
+import { useTbAuth } from "../context/TbAuthContext";
 
 const TIME_RANGES = [
   { label: "15 min", hours: 0.25 },
@@ -35,6 +36,7 @@ function getStatusColor(status) {
 }
 
 export default function NodeDetailModal({ device, vitals, onClose }) {
+  const { token } = useTbAuth();
   const [rangeIdx,      setRangeIdx]      = useState(1); // default 1 hour
   const [ecgHistory,    setEcgHistory]    = useState([]);
   const [historyLoading, setHistoryLoading] = useState(false);
@@ -42,8 +44,9 @@ export default function NodeDetailModal({ device, vitals, onClose }) {
   const fetchHistory = useCallback(async (hours) => {
     if (!device?.id) return;
     setHistoryLoading(true);
+    const authHeaders = token ? { "x-tb-token": token } : {};
     try {
-      const ecgRes = await fetch(`/api/telemetry/history?deviceId=${device.id}&key=ecg&hours=${hours}&limit=2000`);
+      const ecgRes = await fetch(`/api/telemetry/history?deviceId=${device.id}&key=ecg&hours=${hours}&limit=2000`, { headers: authHeaders });
       if (ecgRes.ok) setEcgHistory((await ecgRes.json()).series || []);
     } catch (e) {
       console.error("History fetch error:", e);

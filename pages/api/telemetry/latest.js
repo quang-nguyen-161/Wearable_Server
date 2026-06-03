@@ -10,8 +10,10 @@ export default async function handler(req, res) {
   const deviceId = req.query.deviceId || process.env.TB_DEVICE_ID || null;
   if (!deviceId) return res.status(400).json({ error: "Missing deviceId", data: {} });
 
+  const forwardedToken = req.headers["x-tb-token"] || null;
+
   try {
-    const data = await getLatestTelemetry(deviceId, VITAL_KEYS);
+    const data = await getLatestTelemetry(deviceId, VITAL_KEYS, forwardedToken);
     return res.status(200).json({ data });
   } catch (err) {
     console.error("[telemetry/latest] Error:", err.message);

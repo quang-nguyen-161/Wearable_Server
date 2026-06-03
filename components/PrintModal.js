@@ -68,7 +68,8 @@ export default function PrintModal({ devices, onClose }) {
     if (!selectedDeviceId) return;
     setPatient(null);
     setFetched(false);
-    fetch(`/api/patient?deviceId=${selectedDeviceId}`)
+    const authHeaders = token ? { "x-tb-token": token } : {};
+    fetch(`/api/patient?deviceId=${selectedDeviceId}`, { headers: authHeaders })
       .then(r => r.json())
       .then(j => setPatient(j.info || null))
       .catch(() => {});
