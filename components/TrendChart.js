@@ -71,7 +71,7 @@ const CustomTooltip = ({ active, payload, label, metricKey }) => {
 };
 
 // ── Main component ────────────────────────────────────────────────────────
-export default function TrendChart({ series, metricKey, loading, hideControls = false, isLiveWaveform = false, stroke, sampleFreqHz = 250, height = 220, liveWindowSec = 5 }) {
+export default function TrendChart({ series, metricKey, loading, hideControls = false, isLiveWaveform = false, stroke, sampleFreqHz = 250, height = 220, liveWindowSec = 5, yMin = -7000, yMax = 7000 }) {
 
   // Live waveform mode — high-performance, no animation, no controls
   if (isLiveWaveform) {
@@ -92,9 +92,10 @@ export default function TrendChart({ series, metricKey, loading, hideControls = 
     const latestTs    = series[series.length - 1].ts;
     const windowed    = series.filter(d => d.ts >= latestTs - windowMs);
     const step        = Math.max(1, Math.floor(windowed.length / MAX_DISPLAY));
-    const liveDisplay = step > 1 ? windowed.filter((_, i) => i % step === 0) : windowed;
+    const liveDisplay = (step > 1 ? windowed.filter((_, i) => i % step === 0) : windowed)
+      .map(d => ({ ...d, value: Math.min(yMax, Math.max(yMin, d.value)) }));
 
-    const liveDomain = [-7000, 7000];
+    const liveDomain = [yMin, yMax];
 
     // Compute tick interval: snap to a nice value, min 1s, targeting ~5 ticks
     const rawIntervalMs = windowMs / 5;
@@ -126,13 +127,16 @@ export default function TrendChart({ series, metricKey, loading, hideControls = 
           <YAxis
             type="number"
             domain={liveDomain}
-            ticks={[-7000, -3500, 0, 3500, 7000]}
+            ticks={[yMin, Math.round(yMin / 2), 0, Math.round(yMax / 2), yMax]}
             allowDataOverflow={true}
             tick={{ fill: "rgba(120,160,200,0.45)", fontSize: 9, fontFamily: "Share Tech Mono, monospace" }}
             tickLine={false}
             axisLine={false}
             width={42}
-            tickFormatter={v => v === 0 ? "0" : `${Math.round(v / 1000)}k`}
+            tickFormatter={v => {
+              const abs = Math.abs(v);
+              return abs >= 1000 ? `${(v / 1000).toFixed(abs >= 10000 ? 0 : 1)}k` : String(v);
+            }}
           />
           <Line
             type="linear"

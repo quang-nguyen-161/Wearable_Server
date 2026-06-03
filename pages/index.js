@@ -74,7 +74,7 @@ const SIGNAL_WINDOWS = [
   { label: "60s", value: 60 },
 ];
 
-function SignalModal({ signalKey, series, sampleFreqHz = 250, windowSec = 10, onClose }) {
+function SignalModal({ signalKey, series, sampleFreqHz = 250, windowSec = 10, onWindowSecChange, yMin = -7000, yMax = 7000, onClose }) {
   const meta = SIGNAL_META[signalKey];
 
   useEffect(() => {
@@ -141,6 +141,35 @@ function SignalModal({ signalKey, series, sampleFreqHz = 250, windowSec = 10, on
           }}>×</button>
         </div>
 
+        {/* Display window bar — synced with main page */}
+        {onWindowSecChange && (
+          <div style={{
+            display: "flex", alignItems: "center", gap: 8,
+            padding: "10px 20px",
+            borderBottom: `1px solid ${meta.color}15`,
+          }}>
+            <span style={{ fontSize: 10, fontWeight: 700, letterSpacing: "0.1em", color: "var(--text-muted, #94a3b8)" }}>
+              DISPLAY WINDOW
+            </span>
+            <div style={{ display: "flex", gap: 3, background: "var(--bg-void, #f1f5f9)", borderRadius: 7, padding: 2 }}>
+              {SIGNAL_WINDOWS.map(w => (
+                <button
+                  key={w.label}
+                  onClick={() => onWindowSecChange(w.value)}
+                  style={{
+                    fontSize: 11, fontWeight: 700, padding: "4px 10px",
+                    borderRadius: 5, border: "none", cursor: "pointer", fontFamily: "inherit",
+                    background: windowSec === w.value ? "var(--bg-card, #fff)" : "transparent",
+                    color: windowSec === w.value ? meta.color : "var(--text-muted, #94a3b8)",
+                    boxShadow: windowSec === w.value ? "0 1px 3px rgba(0,0,0,0.1)" : "none",
+                    transition: "all 0.12s",
+                  }}
+                >{w.label}</button>
+              ))}
+            </div>
+          </div>
+        )}
+
         {/* Large chart — no controls, window matches main page selection */}
         <div style={{ padding: "16px 20px 24px" }}>
           <TrendChart
@@ -151,6 +180,8 @@ function SignalModal({ signalKey, series, sampleFreqHz = 250, windowSec = 10, on
             stroke={meta.color}
             sampleFreqHz={sampleFreqHz}
             liveWindowSec={windowSec}
+            yMin={yMin}
+            yMax={yMax}
             height={360}
           />
         </div>
@@ -691,6 +722,8 @@ export default function Dashboard() {
   const [signalModal,      setSignalModal]      = useState(null);
   const [ecgWindowSec,     setEcgWindowSec]     = useState(10);
   const [ecgEnabledMap,    setEcgEnabledMap]    = useState({});
+  const [ecgYMin,          setEcgYMin]          = useState(-7000);
+  const [ecgYMax,          setEcgYMax]          = useState(7000);
   const [printModal,       setPrintModal]       = useState(false);
   const [otaModal,         setOtaModal]         = useState(false);
   const [overviewModal,    setOverviewModal]    = useState(false);
@@ -1142,9 +1175,40 @@ export default function Dashboard() {
               );
             })}
 
-          {/* ECG ON/OFF dropdown — always visible under vital cards */}
+          {/* ECG controls row — ON/OFF toggle + Y-axis min/max inputs */}
           {selectedDeviceId && (
-            <div style={{ display: "flex", justifyContent: "flex-end", padding: "0 2px 2px" }}>
+            <div style={{ display: "flex", alignItems: "center", gap: 10, padding: "0 2px 2px", flexWrap: "wrap", justifyContent: "flex-end" }}>
+              {/* Y-axis range inputs */}
+              <div style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 11, color: "var(--text-muted, #94a3b8)" }}>
+                <span style={{ fontWeight: 700, letterSpacing: "0.06em" }}>Y RANGE</span>
+                <input
+                  type="number"
+                  value={ecgYMin}
+                  onChange={e => { const v = Number(e.target.value); if (!isNaN(v)) setEcgYMin(v); }}
+                  style={{
+                    width: 72, padding: "3px 7px", borderRadius: 6,
+                    border: "1px solid var(--border, #e2e8f0)",
+                    background: "var(--bg-card, #fff)", color: "var(--text-primary, #2c3e50)",
+                    fontSize: 11, fontFamily: "inherit", textAlign: "right",
+                  }}
+                  placeholder="Min"
+                />
+                <span style={{ opacity: 0.5 }}>—</span>
+                <input
+                  type="number"
+                  value={ecgYMax}
+                  onChange={e => { const v = Number(e.target.value); if (!isNaN(v)) setEcgYMax(v); }}
+                  style={{
+                    width: 72, padding: "3px 7px", borderRadius: 6,
+                    border: "1px solid var(--border, #e2e8f0)",
+                    background: "var(--bg-card, #fff)", color: "var(--text-primary, #2c3e50)",
+                    fontSize: 11, fontFamily: "inherit", textAlign: "right",
+                  }}
+                  placeholder="Max"
+                />
+              </div>
+
+              {/* ON/OFF toggle */}
               <button
                 onClick={() => handleToggleEcg(selectedDeviceId, ecgEnabledMap[selectedDeviceId] !== false)}
                 style={{
@@ -1154,11 +1218,9 @@ export default function Dashboard() {
                   background: ecgEnabledMap[selectedDeviceId] !== false ? "rgba(112,173,71,0.08)" : "rgba(148,163,184,0.08)",
                   color: ecgEnabledMap[selectedDeviceId] !== false ? "#70AD47" : "#94a3b8",
                   cursor: "pointer", fontSize: 11, fontWeight: 700,
-                  letterSpacing: "0.06em", fontFamily: "inherit",
-                  transition: "all 0.15s",
+                  letterSpacing: "0.06em", fontFamily: "inherit", transition: "all 0.15s",
                 }}
               >
-                <span style={{ fontSize: 13 }}>{ecgEnabledMap[selectedDeviceId] !== false ? "♥" : "♡"}</span>
                 ECG GRAPH
                 <span style={{
                   padding: "1px 7px", borderRadius: 4, fontSize: 10,
@@ -1216,6 +1278,8 @@ export default function Dashboard() {
                 stroke="var(--green)"
                 sampleFreqHz={settings.ecgSampleFreq}
                 liveWindowSec={ecgWindowSec}
+                yMin={ecgYMin}
+                yMax={ecgYMax}
               />
             </div>
           )}
@@ -1262,6 +1326,9 @@ export default function Dashboard() {
           series={ecgData}
           sampleFreqHz={settings.ecgSampleFreq}
           windowSec={ecgWindowSec}
+          onWindowSecChange={setEcgWindowSec}
+          yMin={ecgYMin}
+          yMax={ecgYMax}
           onClose={() => setSignalModal(null)}
         />
       )}
