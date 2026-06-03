@@ -97,8 +97,16 @@ export default function TrendChart({ series, metricKey, loading, hideControls = 
     const liveVals  = liveDisplay.map(d => d.value);
     const liveMin   = liveVals.length ? Math.min(...liveVals) : 0;
     const liveMax   = liveVals.length ? Math.max(...liveVals) : 1;
-    const livePad   = (liveMax - liveMin) * 0.12 || 50;
-    const liveDomain = [Math.round(liveMin - livePad), Math.round(liveMax + livePad)];
+    // Enforce a minimum peak-to-peak range so tiny signals don't get magnified
+    const MIN_RANGE  = 50;
+    const rawRange   = liveMax - liveMin;
+    const range      = Math.max(rawRange, MIN_RANGE);
+    const center     = (liveMax + liveMin) / 2;
+    const livePad    = range * 0.12;
+    const liveDomain = [
+      Math.round(center - range / 2 - livePad),
+      Math.round(center + range / 2 + livePad),
+    ];
 
     // Compute tick interval: snap to a nice value, min 1s, targeting ~5 ticks
     const rawIntervalMs = windowMs / 5;
