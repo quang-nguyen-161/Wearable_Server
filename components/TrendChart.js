@@ -124,12 +124,15 @@ export default function TrendChart({ series, metricKey, loading, hideControls = 
             axisLine={false}
           />
           <YAxis
+            type="number"
             domain={liveDomain}
+            ticks={[-7000, -3500, 0, 3500, 7000]}
+            allowDataOverflow={true}
             tick={{ fill: "rgba(120,160,200,0.45)", fontSize: 9, fontFamily: "Share Tech Mono, monospace" }}
             tickLine={false}
             axisLine={false}
-            width={38}
-            tickFormatter={v => Math.round(v)}
+            width={42}
+            tickFormatter={v => v === 0 ? "0" : `${Math.round(v / 1000)}k`}
           />
           <Line
             type="linear"

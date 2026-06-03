@@ -1021,13 +1021,6 @@ export default function Dashboard() {
                     >
                       ✕
                     </button>
-                    <button
-                      className={`ecg-toggle-pill ${ecgEnabledMap[device.id] !== false ? "ecg-toggle-pill--on" : "ecg-toggle-pill--off"}`}
-                      onClick={(e) => { e.stopPropagation(); handleToggleEcg(device.id, ecgEnabledMap[device.id] !== false); }}
-                      title={ecgEnabledMap[device.id] !== false ? "ECG shown — click to hide" : "ECG hidden — click to show"}
-                    >
-                      {ecgEnabledMap[device.id] !== false ? "ECG ON" : "ECG OFF"}
-                    </button>
                   </div>
                 );
               })
@@ -1148,6 +1141,35 @@ export default function Dashboard() {
                 </div>
               );
             })}
+
+          {/* ECG ON/OFF dropdown — always visible under vital cards */}
+          {selectedDeviceId && (
+            <div style={{ display: "flex", justifyContent: "flex-end", padding: "0 2px 2px" }}>
+              <button
+                onClick={() => handleToggleEcg(selectedDeviceId, ecgEnabledMap[selectedDeviceId] !== false)}
+                style={{
+                  display: "flex", alignItems: "center", gap: 6,
+                  padding: "5px 12px", borderRadius: 8,
+                  border: `1px solid ${ecgEnabledMap[selectedDeviceId] !== false ? "rgba(112,173,71,0.4)" : "rgba(148,163,184,0.3)"}`,
+                  background: ecgEnabledMap[selectedDeviceId] !== false ? "rgba(112,173,71,0.08)" : "rgba(148,163,184,0.08)",
+                  color: ecgEnabledMap[selectedDeviceId] !== false ? "#70AD47" : "#94a3b8",
+                  cursor: "pointer", fontSize: 11, fontWeight: 700,
+                  letterSpacing: "0.06em", fontFamily: "inherit",
+                  transition: "all 0.15s",
+                }}
+              >
+                <span style={{ fontSize: 13 }}>{ecgEnabledMap[selectedDeviceId] !== false ? "♥" : "♡"}</span>
+                ECG GRAPH
+                <span style={{
+                  padding: "1px 7px", borderRadius: 4, fontSize: 10,
+                  background: ecgEnabledMap[selectedDeviceId] !== false ? "rgba(112,173,71,0.15)" : "rgba(148,163,184,0.15)",
+                }}>
+                  {ecgEnabledMap[selectedDeviceId] !== false ? "ON" : "OFF"}
+                </span>
+                <span style={{ fontSize: 9, opacity: 0.6 }}>▾</span>
+              </button>
+            </div>
+          )}
 
           {/* ECG Signal — live HTTPS waveform, each sample timestamped */}
           {selectedDeviceId && ecgEnabledMap[selectedDeviceId] !== false && (
@@ -1405,29 +1427,6 @@ export default function Dashboard() {
           opacity: 1;
         }
 
-        .ecg-toggle-pill {
-          margin-top: 4px;
-          font-size: 9px;
-          font-weight: 700;
-          letter-spacing: 0.07em;
-          padding: 2px 8px;
-          border-radius: 20px;
-          border: 1px solid;
-          cursor: pointer;
-          font-family: inherit;
-          transition: all 0.15s;
-          white-space: nowrap;
-        }
-        .ecg-toggle-pill--on {
-          background: rgba(112,173,71,0.12);
-          border-color: rgba(112,173,71,0.4);
-          color: #70AD47;
-        }
-        .ecg-toggle-pill--off {
-          background: rgba(148,163,184,0.1);
-          border-color: rgba(148,163,184,0.3);
-          color: #94a3b8;
-        }
 
         .device-selector-label {
           display: flex;
