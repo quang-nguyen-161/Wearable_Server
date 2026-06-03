@@ -66,17 +66,8 @@ const SIGNAL_META = {
   ppg: { label: "PPG SIGNAL", color: "#70AD47", unit: "a.u." },
 };
 
-const SIGNAL_WINDOWS = [
-  { label: "3s",  value: 3  },
-  { label: "5s",  value: 5  },
-  { label: "10s", value: 10 },
-  { label: "30s", value: 30 },
-  { label: "60s", value: 60 },
-];
-
-function SignalModal({ signalKey, series, onClose }) {
+function SignalModal({ signalKey, series, sampleFreqHz = 250, onClose }) {
   const meta = SIGNAL_META[signalKey];
-  const [windowSec, setWindowSec] = useState(10);
 
   useEffect(() => {
     const fn = e => { if (e.key === "Escape") onClose(); };
@@ -84,13 +75,7 @@ function SignalModal({ signalKey, series, onClose }) {
     return () => window.removeEventListener("keydown", fn);
   }, [onClose]);
 
-  // Filter series to selected time window
-  const cutoff      = Date.now() - windowSec * 1000;
-  const displayData = (series || []).filter(d => d.ts >= cutoff);
-  const pointCount  = displayData.length;
-  const effectiveHz = pointCount > 0 && windowSec > 0
-    ? Math.round(pointCount / windowSec)
-    : 0;
+  const pointCount  = series?.length ?? 0;
 
   return (
     <div
@@ -134,7 +119,7 @@ function SignalModal({ signalKey, series, onClose }) {
                 {meta.label}
               </div>
               <div style={{ fontSize: 11, color: "var(--text-muted, #94a3b8)", marginTop: 2 }}>
-                Live · WebSocket · {pointCount} pts · ~{effectiveHz} Hz
+                Live · WebSocket · {pointCount} pts · {sampleFreqHz} Hz
               </div>
             </div>
           </div>
@@ -145,57 +130,16 @@ function SignalModal({ signalKey, series, onClose }) {
           }}>×</button>
         </div>
 
-        {/* Interval selector */}
-        <div style={{
-          display: "flex", alignItems: "center", gap: 10,
-          padding: "12px 20px",
-          borderBottom: `1px solid ${meta.color}15`,
-          flexWrap: "wrap",
-        }}>
-          <span style={{
-            fontSize: 10, fontWeight: 700, letterSpacing: "0.1em",
-            color: "var(--text-muted, #94a3b8)", marginRight: 4,
-          }}>DISPLAY WINDOW</span>
-
-          <div style={{
-            display: "flex", gap: 4,
-            background: "var(--bg-void, #f1f5f9)",
-            borderRadius: 8, padding: 3,
-          }}>
-            {SIGNAL_WINDOWS.map(w => (
-              <button
-                key={w.label}
-                onClick={() => setWindowSec(w.value)}
-                style={{
-                  fontSize: 11, fontWeight: 700, padding: "5px 12px",
-                  borderRadius: 6, border: "none", cursor: "pointer",
-                  fontFamily: "inherit",
-                  background: windowSec === w.value
-                    ? "var(--bg-card, #fff)"
-                    : "transparent",
-                  color: windowSec === w.value
-                    ? meta.color
-                    : "var(--text-muted, #94a3b8)",
-                  boxShadow: windowSec === w.value
-                    ? "0 1px 4px rgba(0,0,0,0.1)"
-                    : "none",
-                  transition: "all 0.15s",
-                }}
-              >{w.label}</button>
-            ))}
-          </div>
-
-          <span style={{ marginLeft: "auto", fontSize: 11, color: "var(--text-muted, #94a3b8)" }}>
-            Showing last <strong style={{ color: meta.color }}>{windowSec}s</strong> · {pointCount} samples
-          </span>
-        </div>
-
-        {/* Large chart */}
+        {/* Large chart — same live waveform renderer as the main chart */}
         <div style={{ padding: "16px 20px 24px" }}>
           <TrendChart
-            series={displayData}
+            series={series}
             metricKey={signalKey}
             loading={false}
+            isLiveWaveform={true}
+            stroke={meta.color}
+            sampleFreqHz={sampleFreqHz}
+            height={360}
           />
         </div>
       </div>
@@ -1227,6 +1171,7 @@ export default function Dashboard() {
         <SignalModal
           signalKey={signalModal.key}
           series={ecgData}
+          sampleFreqHz={settings.ecgSampleFreq}
           onClose={() => setSignalModal(null)}
         />
       )}

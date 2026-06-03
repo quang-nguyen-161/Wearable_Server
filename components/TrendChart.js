@@ -71,7 +71,7 @@ const CustomTooltip = ({ active, payload, label, metricKey }) => {
 };
 
 // ── Main component ────────────────────────────────────────────────────────
-export default function TrendChart({ series, metricKey, loading, hideControls = false, isLiveWaveform = false, stroke, sampleFreqHz = 250 }) {
+export default function TrendChart({ series, metricKey, loading, hideControls = false, isLiveWaveform = false, stroke, sampleFreqHz = 250, height = 220 }) {
 
   // Live waveform mode — high-performance, no animation, no controls
   if (isLiveWaveform) {
@@ -105,7 +105,7 @@ export default function TrendChart({ series, metricKey, loading, hideControls = 
       hour: "2-digit", minute: "2-digit", second: "2-digit", hour12: false,
     });
     return (
-      <ResponsiveContainer width="100%" height={220}>
+      <ResponsiveContainer width="100%" height={height}>
         <LineChart data={liveDisplay} margin={{ top: 4, right: 8, bottom: 0, left: 4 }}>
           <CartesianGrid stroke="rgba(120,160,200,0.08)" strokeDasharray="4 4" vertical={false} />
           <XAxis
