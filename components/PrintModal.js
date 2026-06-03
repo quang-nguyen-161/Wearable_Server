@@ -3,6 +3,7 @@ import { useState, useEffect, useCallback } from "react";
 import { createPortal } from "react-dom";
 import { exportCsv } from "../lib/exportCsv";
 import { useTbAuth } from "../context/TbAuthContext";
+import { getTelemetryHistoryRange, getPatientInfo } from "../lib/tbBrowserClient";
 
 const VITAL_META = {
   ppgHeartRate: { label: "PPG Heart Rate", unit: "bpm", color: "#5B9BD5" },
@@ -68,28 +69,25 @@ export default function PrintModal({ devices, onClose }) {
     if (!selectedDeviceId) return;
     setPatient(null);
     setFetched(false);
-    const authHeaders = token ? { "x-tb-token": token } : {};
-    fetch(`/api/patient?deviceId=${selectedDeviceId}`, { headers: authHeaders })
-      .then(r => r.json())
-      .then(j => setPatient(j.info || null))
-      .catch(() => {});
+    if (token) {
+      getPatientInfo(token, selectedDeviceId)
+        .then(info => setPatient(info))
+        .catch(() => {});
+    }
   }, [selectedDeviceId]);
 
   // ── Fetch history data ─────────────────────────────────────────────────
   const fetchData = useCallback(async () => {
-    if (!selectedDeviceId) return;
+    if (!selectedDeviceId || !token) return;
     setLoading(true);
-    const hours = (endTs - startTs) / 3600_000;
-    const keys  = Object.entries(include).filter(([,v]) => v).map(([k]) => k);
-    const authHeaders = token ? { "x-tb-token": token } : {};
+    const keys = Object.entries(include).filter(([,v]) => v).map(([k]) => k);
 
     try {
       const results = await Promise.all(
-        keys.map(key =>
-          fetch(`/api/telemetry/history?deviceId=${selectedDeviceId}&key=${key}&hours=${hours.toFixed(4)}&limit=5000`, { headers: authHeaders })
-            .then(r => r.json())
-            .then(j => [key, (j.series || []).filter(p => p.ts >= startTs && p.ts <= endTs)])
-        )
+        keys.map(async key => {
+          const series = await getTelemetryHistoryRange(token, selectedDeviceId, key, startTs, endTs, 5000);
+          return [key, series];
+        })
       );
       setData(Object.fromEntries(results));
       setFetched(true);

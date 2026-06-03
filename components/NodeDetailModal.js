@@ -5,6 +5,7 @@
 import { useState, useEffect, useCallback } from "react";
 import TrendChart from "./TrendChart";
 import { useTbAuth } from "../context/TbAuthContext";
+import { getTelemetryHistory } from "../lib/tbBrowserClient";
 
 const TIME_RANGES = [
   { label: "15 min", hours: 0.25 },
@@ -42,18 +43,17 @@ export default function NodeDetailModal({ device, vitals, onClose }) {
   const [historyLoading, setHistoryLoading] = useState(false);
 
   const fetchHistory = useCallback(async (hours) => {
-    if (!device?.id) return;
+    if (!device?.id || !token) return;
     setHistoryLoading(true);
-    const authHeaders = token ? { "x-tb-token": token } : {};
     try {
-      const ecgRes = await fetch(`/api/telemetry/history?deviceId=${device.id}&key=ecg&hours=${hours}&limit=2000`, { headers: authHeaders });
-      if (ecgRes.ok) setEcgHistory((await ecgRes.json()).series || []);
+      const series = await getTelemetryHistory(token, device.id, "ecg", hours, 2000);
+      setEcgHistory(series);
     } catch (e) {
       console.error("History fetch error:", e);
     } finally {
       setHistoryLoading(false);
     }
-  }, [device?.id]);
+  }, [device?.id, token]);
 
   useEffect(() => {
     fetchHistory(TIME_RANGES[rangeIdx].hours);
