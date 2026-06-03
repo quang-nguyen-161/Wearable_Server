@@ -19,6 +19,9 @@ export const DEFAULT_SETTINGS = {
   vitalInterval:     1000,
   ecgSampleFreq:     250,
   ecgPacketInterval: 20,
+  ppgSampleFreq:     100,
+  ppgRedLedMa:       6,
+  ppgIrLedMa:        6,
   thresholds:        DEFAULT_THRESHOLDS,
 };
 
@@ -45,6 +48,9 @@ export function SettingsProvider({ children }) {
         vitalInterval:     a.vitalInterval     ?? DEFAULT_SETTINGS.vitalInterval,
         ecgSampleFreq:     a.ecgSampleFreq     ?? DEFAULT_SETTINGS.ecgSampleFreq,
         ecgPacketInterval: a.ecgPacketInterval ?? DEFAULT_SETTINGS.ecgPacketInterval,
+        ppgSampleFreq:     a.ppgSampleFreq     ?? DEFAULT_SETTINGS.ppgSampleFreq,
+        ppgRedLedMa:       a.ppgRedLedMa       ?? DEFAULT_SETTINGS.ppgRedLedMa,
+        ppgIrLedMa:        a.ppgIrLedMa        ?? DEFAULT_SETTINGS.ppgIrLedMa,
         thresholds: {
           ppgHeartRate: {
             normalMin: a.ppgHr_normalMin ?? DEFAULT_THRESHOLDS.ppgHeartRate.normalMin,

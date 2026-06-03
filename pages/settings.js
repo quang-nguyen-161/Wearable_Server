@@ -4,6 +4,9 @@
 // - vitalInterval       → saved as SHARED_SCOPE (firmware: how often vitals are reported)
 // - ecgSampleFreq       → saved as SHARED_SCOPE (firmware: ADC sampling rate in Hz)
 // - ecgPacketInterval   → saved as SHARED_SCOPE (firmware: ECG packet send interval in ms)
+// - ppgSampleFreq       → saved as SHARED_SCOPE (firmware: MAX30102 sample rate in Hz)
+// - ppgRedLedMa         → saved as SHARED_SCOPE (firmware: red LED drive current in mA)
+// - ppgIrLedMa          → saved as SHARED_SCOPE (firmware: IR LED drive current in mA)
 
 import { useState, useEffect, useCallback } from "react";
 import { useRouter } from "next/router";
@@ -28,9 +31,15 @@ const VITAL_LABELS = {
   temperature:  { label: "TEMPERATURE",    unit: "°C"  },
 };
 
-const DEFAULT_VITAL_INTERVAL    = 1000;  // ms — how often vitals are reported
-const DEFAULT_ECG_SAMPLE_FREQ   = 250;   // Hz — ADC sampling rate
-const DEFAULT_ECG_PACKET_INTERVAL = 500; // ms — how often ECG packets are sent
+const DEFAULT_VITAL_INTERVAL      = 1000; // ms — how often vitals are reported
+const DEFAULT_ECG_SAMPLE_FREQ     = 250;  // Hz — ADC sampling rate
+const DEFAULT_ECG_PACKET_INTERVAL = 500;  // ms — how often ECG packets are sent
+const DEFAULT_PPG_SAMPLE_FREQ     = 100;  // Hz — MAX30102 sample rate
+const DEFAULT_PPG_RED_LED_MA      = 6;    // mA — red LED drive current
+const DEFAULT_PPG_IR_LED_MA       = 6;    // mA — IR LED drive current
+
+const ECG_FREQ_OPTIONS = [125, 250, 500, 1000];
+const PPG_FREQ_OPTIONS = [50, 100, 200, 400, 800, 1000];
 
 // ── Settings page ────────────────────────────────────────────────────────────
 export default function Settings() {
@@ -44,6 +53,9 @@ export default function Settings() {
   const [vitalInterval,      setVitalInterval]      = useState(DEFAULT_VITAL_INTERVAL);
   const [ecgSampleFreq,      setEcgSampleFreq]      = useState(DEFAULT_ECG_SAMPLE_FREQ);
   const [ecgPacketInterval,  setEcgPacketInterval]  = useState(DEFAULT_ECG_PACKET_INTERVAL);
+  const [ppgSampleFreq,      setPpgSampleFreq]      = useState(DEFAULT_PPG_SAMPLE_FREQ);
+  const [ppgRedLedMa,        setPpgRedLedMa]        = useState(DEFAULT_PPG_RED_LED_MA);
+  const [ppgIrLedMa,         setPpgIrLedMa]         = useState(DEFAULT_PPG_IR_LED_MA);
   const [loading,            setLoading]            = useState(false);
   const [saving,             setSaving]             = useState(false);
   const [saveMsg,            setSaveMsg]            = useState(null); // { type: "ok"|"err", text }
@@ -112,6 +124,9 @@ export default function Settings() {
       setVitalInterval(a.vitalInterval ?? DEFAULT_VITAL_INTERVAL);
       setEcgSampleFreq(a.ecgSampleFreq ?? DEFAULT_ECG_SAMPLE_FREQ);
       setEcgPacketInterval(a.ecgPacketInterval ?? DEFAULT_ECG_PACKET_INTERVAL);
+      setPpgSampleFreq(a.ppgSampleFreq ?? DEFAULT_PPG_SAMPLE_FREQ);
+      setPpgRedLedMa(a.ppgRedLedMa ?? DEFAULT_PPG_RED_LED_MA);
+      setPpgIrLedMa(a.ppgIrLedMa ?? DEFAULT_PPG_IR_LED_MA);
     } catch (e) {
       console.error("Load attributes:", e);
     } finally {
@@ -160,9 +175,9 @@ export default function Settings() {
     try {
       await Promise.all([
         saveDeviceAttributes(token, selectedDeviceId, "SERVER_SCOPE", serverAttrs),
-        saveDeviceAttributes(token, selectedDeviceId, "SHARED_SCOPE", { vitalInterval, ecgSampleFreq, ecgPacketInterval }),
+        saveDeviceAttributes(token, selectedDeviceId, "SHARED_SCOPE", { vitalInterval, ecgSampleFreq, ecgPacketInterval, ppgSampleFreq, ppgRedLedMa, ppgIrLedMa }),
       ]);
-      updateSettings({ vitalInterval, ecgSampleFreq, ecgPacketInterval, thresholds });
+      updateSettings({ vitalInterval, ecgSampleFreq, ecgPacketInterval, ppgSampleFreq, ppgRedLedMa, ppgIrLedMa, thresholds });
 
       setSaveMsg({ type: "ok", text: "Settings saved to ThingsBoard ✓" });
     } catch (e) {
@@ -179,6 +194,9 @@ export default function Settings() {
     setVitalInterval(DEFAULT_VITAL_INTERVAL);
     setEcgSampleFreq(DEFAULT_ECG_SAMPLE_FREQ);
     setEcgPacketInterval(DEFAULT_ECG_PACKET_INTERVAL);
+    setPpgSampleFreq(DEFAULT_PPG_SAMPLE_FREQ);
+    setPpgRedLedMa(DEFAULT_PPG_RED_LED_MA);
+    setPpgIrLedMa(DEFAULT_PPG_IR_LED_MA);
   };
 
   // ── Threshold field helper ─────────────────────────────────────────────
@@ -352,8 +370,18 @@ export default function Settings() {
                 <span className="ecg-field-unit">Hz</span>
               </div>
               <div className="ecg-field-sub">ADC sampling rate for the ECG signal. Higher rate captures more detail but increases data volume.</div>
+              <div className="interval-row">
+                <input
+                  type="range"
+                  min={0} max={ECG_FREQ_OPTIONS.length - 1} step={1}
+                  value={ECG_FREQ_OPTIONS.indexOf(ecgSampleFreq) === -1 ? 1 : ECG_FREQ_OPTIONS.indexOf(ecgSampleFreq)}
+                  onChange={e => setEcgSampleFreq(ECG_FREQ_OPTIONS[Number(e.target.value)])}
+                  className="interval-slider"
+                />
+                <span className="interval-value">{ecgSampleFreq} Hz</span>
+              </div>
               <div className="interval-presets">
-                {[125, 250, 500, 1000].map(hz => (
+                {ECG_FREQ_OPTIONS.map(hz => (
                   <button
                     key={hz}
                     className={`preset-btn ${ecgSampleFreq === hz ? "preset-btn--active" : ""}`}
@@ -363,7 +391,6 @@ export default function Settings() {
                   </button>
                 ))}
               </div>
-              <div className="ecg-value-display">{ecgSampleFreq} Hz</div>
             </div>
 
             {/* ECG packet send interval */}
@@ -396,6 +423,104 @@ export default function Settings() {
               </div>
               <div className="interval-hint">
                 Samples per packet = {ecgSampleFreq} Hz × {ecgPacketInterval} ms / 1000 = <strong>{Math.round(ecgSampleFreq * ecgPacketInterval / 1000)} samples</strong>
+              </div>
+            </div>
+          </section>
+
+          {/* ── PPG settings ── */}
+          <section className="settings-section">
+            <div className="section-title">PPG SETTINGS</div>
+            <div className="section-sub">
+              Saved as Shared attributes. Controls the MAX30102 sensor: photodetector sampling rate and LED drive currents for SpO₂ and heart rate acquisition.
+            </div>
+
+            {/* PPG sample frequency */}
+            <div className="ecg-field-group">
+              <div className="ecg-field-label">
+                SAMPLE FREQUENCY
+                <span className="ecg-field-unit">Hz</span>
+              </div>
+              <div className="ecg-field-sub">Photodetector sampling rate. Higher rates improve signal quality but increase power consumption.</div>
+              <div className="interval-row">
+                <input
+                  type="range"
+                  min={0} max={PPG_FREQ_OPTIONS.length - 1} step={1}
+                  value={PPG_FREQ_OPTIONS.indexOf(ppgSampleFreq) === -1 ? 1 : PPG_FREQ_OPTIONS.indexOf(ppgSampleFreq)}
+                  onChange={e => setPpgSampleFreq(PPG_FREQ_OPTIONS[Number(e.target.value)])}
+                  className="interval-slider"
+                />
+                <span className="interval-value">{ppgSampleFreq} Hz</span>
+              </div>
+              <div className="interval-presets">
+                {PPG_FREQ_OPTIONS.map(hz => (
+                  <button
+                    key={hz}
+                    className={`preset-btn ${ppgSampleFreq === hz ? "preset-btn--active" : ""}`}
+                    onClick={() => setPpgSampleFreq(hz)}
+                  >
+                    {hz} Hz
+                  </button>
+                ))}
+              </div>
+            </div>
+
+            {/* Red LED current */}
+            <div className="ecg-field-group">
+              <div className="ecg-field-label">
+                RED LED CURRENT
+                <span className="ecg-field-unit">mA</span>
+              </div>
+              <div className="ecg-field-sub">Drive current for the red LED (660 nm). Higher current improves signal through thicker or darker tissue.</div>
+              <div className="interval-row">
+                <input
+                  type="range"
+                  min={0} max={51} step={1}
+                  value={ppgRedLedMa}
+                  onChange={e => setPpgRedLedMa(Number(e.target.value))}
+                  className="interval-slider interval-slider--red"
+                />
+                <span className="interval-value interval-value--red">{ppgRedLedMa} mA</span>
+              </div>
+              <div className="interval-presets">
+                {[3, 6, 12, 25, 51].map(ma => (
+                  <button
+                    key={ma}
+                    className={`preset-btn ${ppgRedLedMa === ma ? "preset-btn--active preset-btn--red" : ""}`}
+                    onClick={() => setPpgRedLedMa(ma)}
+                  >
+                    {ma} mA
+                  </button>
+                ))}
+              </div>
+            </div>
+
+            {/* IR LED current */}
+            <div className="ecg-field-group">
+              <div className="ecg-field-label">
+                IR LED CURRENT
+                <span className="ecg-field-unit">mA</span>
+              </div>
+              <div className="ecg-field-sub">Drive current for the infrared LED (880 nm). Used alongside the red LED for SpO₂ ratio calculation.</div>
+              <div className="interval-row">
+                <input
+                  type="range"
+                  min={0} max={51} step={1}
+                  value={ppgIrLedMa}
+                  onChange={e => setPpgIrLedMa(Number(e.target.value))}
+                  className="interval-slider interval-slider--ir"
+                />
+                <span className="interval-value interval-value--ir">{ppgIrLedMa} mA</span>
+              </div>
+              <div className="interval-presets">
+                {[3, 6, 12, 25, 51].map(ma => (
+                  <button
+                    key={ma}
+                    className={`preset-btn ${ppgIrLedMa === ma ? "preset-btn--active preset-btn--ir" : ""}`}
+                    onClick={() => setPpgIrLedMa(ma)}
+                  >
+                    {ma} mA
+                  </button>
+                ))}
               </div>
             </div>
           </section>
@@ -655,6 +780,12 @@ export default function Settings() {
           color: var(--text-muted, #94a3b8);
           line-height: 1.5;
         }
+        .interval-slider--red  { accent-color: #ef4444; }
+        .interval-slider--ir   { accent-color: #8b5cf6; }
+        .interval-value--red   { color: #ef4444; }
+        .interval-value--ir    { color: #8b5cf6; }
+        .preset-btn--red { border-color: #ef4444; background: rgba(239,68,68,0.08); color: #ef4444; }
+        .preset-btn--ir  { border-color: #8b5cf6; background: rgba(139,92,246,0.08); color: #8b5cf6; }
 
         /* ECG settings */
         .ecg-field-group {
