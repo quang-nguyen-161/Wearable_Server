@@ -1,7 +1,6 @@
 // ── HealthMonitor ESP32 Firmware ─────────────────────────────────────────────
 // Event-driven: esp_timer samples ADC at 250Hz into a working buffer.
-// When a batch is complete it swaps to a ready buffer and sets batchReady.
-// loop() posts demo data to ALL tracked nodes and syncs the node list every 10s.
+// When a batch is complete it sets batchReady; loop() publishes it via MQTT.
 //
 // First boot — captive portal (AP "HealthMonitor-Setup"):
 //   Enter WiFi SSID/pass + ThingsBoard admin email/password.
@@ -9,10 +8,10 @@
 //
 // Node discovery (every 10s):
 //   Fetches all TB devices whose name contains "node" (case-insensitive).
-//   New nodes  → resolve access token → store in NVS.
-//   Gone nodes → remove token from NVS.
+//   TB gateway API auto-creates leaf devices on first publish.
 //
-// Telemetry: HTTPS POST per batch (TLS reused after first handshake); admin API via HTTP.
+// Telemetry: MQTT gateway API (v1/gateway/telemetry, port 1883).
+// Admin API (node discovery): HTTPS via adminClient.
 // ─────────────────────────────────────────────────────────────────────────────
 
 #include <Arduino.h>
@@ -22,6 +21,7 @@
 #include <WebServer.h>
 #include <DNSServer.h>
 #include <Preferences.h>
+#include <PubSubClient.h>
 #include <esp_timer.h>
 #include <freertos/task.h>
 #include <time.h>
@@ -29,16 +29,20 @@
 
 // ── Compile-time constants ────────────────────────────────────────────────────
 
-const char* TB_HOST = "c7.hust-2slab.org";
+const char* TB_HOST = "103.116.39.179";
 
-#define SAMPLE_RATE_HZ       250
-#define SAMPLE_INTERVAL_US   (1000000 / SAMPLE_RATE_HZ)
-#define SAMPLE_INTERVAL_MS   (1000 / SAMPLE_RATE_HZ)
-#define BATCH_SIZE           250
-#define VITAL_INTERVAL_MS    15000
+#define TB_MQTT_PORT          1883
+#define TB_GATEWAY_TOKEN      "4o51ajerynq34mtosc26"
+#define MQTT_BUF_SIZE         2048
+
+#define SAMPLE_RATE_HZ        250
+#define SAMPLE_INTERVAL_US    (1000000 / SAMPLE_RATE_HZ)
+#define SAMPLE_INTERVAL_MS    (1000 / SAMPLE_RATE_HZ)
+#define BATCH_SIZE            250
+#define VITAL_INTERVAL_MS     15000
 #define NODE_SYNC_INTERVAL_MS 10000
-#define PAYLOAD_BUF_SIZE     4096
-#define MAX_NODES            16
+#define PAYLOAD_BUF_SIZE      4096
+#define MAX_NODES             16
 
 // ── Runtime config ────────────────────────────────────────────────────────────
 
@@ -50,36 +54,23 @@ static char tbAdminPass[64] = "";
 // ── Node registry ─────────────────────────────────────────────────────────────
 
 static String nodeNames[MAX_NODES];
-static char   nodeToks[MAX_NODES][64];
 static int    nodeCount = 0;
 
 // ── Runtime state ─────────────────────────────────────────────────────────────
 
-static String adminJwt = "";
+static String      adminJwt = "";
 static Preferences prefs;
 
-// ── TLS clients + serialisation mutex ────────────────────────────────────────
-// WiFiClientSecure/mbedTLS is NOT thread-safe; tlsMux ensures only one TLS op
-// runs at a time across Core 0 (ecgPostTask) and Core 1 (loop/syncNodes).
+// ── Admin HTTPS client (node discovery only) ──────────────────────────────────
 
-static WiFiClientSecure  telemClient;
-static bool              telemClientInit = false;
-static WiFiClientSecure  adminClient;
-static bool              adminClientInit = false;
-static SemaphoreHandle_t tlsMux         = nullptr;
+static WiFiClientSecure adminClient;
 
-// ── ECG background poster (Node1 only) ───────────────────────────────────────
-// loop() copies the batch here and returns immediately; the task does the post.
-// portMUX spinlock protects the ~300-byte copy across cores.
+// ── MQTT client (all telemetry) ───────────────────────────────────────────────
 
-#define ECG_POST_BUF_SIZE 1400
-static char         ecgPostBuf[ECG_POST_BUF_SIZE];
-static int          ecgPostLen      = 0;
-static int          ecgPostNodeIdx  = -1;
-static portMUX_TYPE ecgBufMux       = portMUX_INITIALIZER_UNLOCKED;
-static TaskHandle_t ecgTaskHandle   = nullptr;
+static WiFiClient   mqttNetClient;
+static PubSubClient mqttClient(mqttNetClient);
 
-// ── Buffers ───────────────────────────────────────────────────────────────────
+// ── ECG sampling buffers ───────────────────────────────────────────────────────
 
 static int16_t ecgWork[BATCH_SIZE];
 static volatile unsigned long long readyTs          = 0;
@@ -89,7 +80,7 @@ static int workIdx = 0;
 
 static unsigned long lastVitalMs    = 0;
 static unsigned long lastNodeSyncMs = 0;
-static char payload[PAYLOAD_BUF_SIZE];
+static char          payload[PAYLOAD_BUF_SIZE];
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -104,10 +95,6 @@ static String tbUrl(const String& path) {
   return String("https://") + TB_HOST + path;
 }
 
-static String telemUrl(const char* token) {
-  return String("https://") + TB_HOST + "/api/v1/" + token + "/telemetry";
-}
-
 static String jsonStr(const String& json, const String& key) {
   String needle = "\"" + key + "\":\"";
   int s = json.indexOf(needle);
@@ -118,7 +105,6 @@ static String jsonStr(const String& json, const String& key) {
 }
 
 // ── NVS ───────────────────────────────────────────────────────────────────────
-// Node tokens stored as: n_count (int), n_0/n_1/… (names), t_0/t_1/… (tokens)
 
 static bool loadConfig() {
   prefs.begin("hm", true);
@@ -140,16 +126,10 @@ static void loadNodesFromNVS() {
   int cnt = prefs.getInt("n_count", 0);
   nodeCount = 0;
   for (int i = 0; i < cnt && nodeCount < MAX_NODES; i++) {
-    char nk[8], tk[8];
+    char nk[8];
     snprintf(nk, sizeof(nk), "n_%d", i);
-    snprintf(tk, sizeof(tk), "t_%d", i);
     String name = prefs.getString(nk, "");
-    String tok  = prefs.getString(tk, "");
-    if (name.length() && tok.length()) {
-      nodeNames[nodeCount] = name;
-      tok.toCharArray(nodeToks[nodeCount], 64);
-      nodeCount++;
-    }
+    if (name.length()) nodeNames[nodeCount++] = name;
   }
   prefs.end();
   Serial.printf("[Nodes] %d node(s) loaded from NVS\n", nodeCount);
@@ -159,11 +139,9 @@ static void saveNodesToNVS() {
   prefs.begin("hm", false);
   prefs.putInt("n_count", nodeCount);
   for (int i = 0; i < nodeCount; i++) {
-    char nk[8], tk[8];
+    char nk[8];
     snprintf(nk, sizeof(nk), "n_%d", i);
-    snprintf(tk, sizeof(tk), "t_%d", i);
     prefs.putString(nk, nodeNames[i]);
-    prefs.putString(tk, nodeToks[i]);
   }
   prefs.end();
 }
@@ -258,7 +236,6 @@ static void startConfigPortal() {
     if (!pNeedsSave) continue;
     pNeedsSave = false;
 
-    // Try connecting to WiFi
     WiFi.mode(WIFI_AP_STA);
     WiFi.softAP("HealthMonitor-Setup");
     WiFi.begin(pSsid.c_str(), pPass.c_str());
@@ -275,25 +252,21 @@ static void startConfigPortal() {
       continue;
     }
 
-    // Save config and restart
     prefs.begin("hm", false);
     prefs.putString("wifi_ssid", pSsid);
     prefs.putString("wifi_pass", pPass);
     prefs.putString("tb_user",   pUser);
     prefs.putString("tb_pass",   pPass2);
-    prefs.putInt("n_count", 0);  // clear stale node list
+    prefs.putInt("n_count", 0);
     prefs.end();
 
-    // Serve success page then restart
-    // (can't serve after loop ends — we need to call handleClient once more)
-    pError = "__ok__:" + pSsid;  // sentinel to trigger success page on GET /
-    // The meta-refresh from the POST already points back to / — it will show ok
+    pError = "__ok__:" + pSsid;
     delay(2000);
     ESP.restart();
   }
 }
 
-// ── TB admin API helpers ──────────────────────────────────────────────────────
+// ── TB admin API helpers (node discovery only) ────────────────────────────────
 
 static bool ensureJwt() {
   if (adminJwt.length()) return true;
@@ -301,100 +274,28 @@ static bool ensureJwt() {
   char body[256];
   snprintf(body, sizeof(body),
     "{\"username\":\"%s\",\"password\":\"%s\"}", tbAdminUser, tbAdminPass);
-  xSemaphoreTake(tlsMux, portMAX_DELAY);
-  if (!adminClientInit) { adminClient.setInsecure(); adminClientInit = true; }
+  adminClient.setInsecure();
   HTTPClient http;
   http.begin(adminClient, tbUrl("/api/auth/login"));
   http.addHeader("Content-Type", "application/json");
   int code = http.POST(body);
   resp = http.getString();
   http.end();
-  xSemaphoreGive(tlsMux);
   if (code != 200) { Serial.printf("[Auth] login failed %d\n", code); return false; }
   adminJwt = jsonStr(resp, "token");
   return adminJwt.length() > 0;
 }
 
 static int tbGet(const String& path, String& out) {
-  xSemaphoreTake(tlsMux, portMAX_DELAY);
-  if (!adminClientInit) { adminClient.setInsecure(); adminClientInit = true; }
+  adminClient.setInsecure();
   HTTPClient http;
   http.begin(adminClient, tbUrl(path));
   http.addHeader("X-Authorization", "Bearer " + adminJwt);
   int code = http.GET();
   out = http.getString();
   http.end();
-  xSemaphoreGive(tlsMux);
   if (code == 401) adminJwt = "";
   return code;
-}
-
-static int tbPost(const String& path, const String& body, String& out) {
-  xSemaphoreTake(tlsMux, portMAX_DELAY);
-  if (!adminClientInit) { adminClient.setInsecure(); adminClientInit = true; }
-  HTTPClient http;
-  http.begin(adminClient, tbUrl(path));
-  http.addHeader("Content-Type", "application/json");
-  if (adminJwt.length()) http.addHeader("X-Authorization", "Bearer " + adminJwt);
-  int code = http.POST(body);
-  out = http.getString();
-  http.end();
-  xSemaphoreGive(tlsMux);
-  return code;
-}
-
-// ── Resolve one node's device token via admin API ─────────────────────────────
-
-// Extract the device UUID for 'name' from a TB /api/tenant/devices JSON response.
-// Anchors on "entityType":"DEVICE" to avoid dependence on JSON field order.
-static String extractDeviceId(const String& json, const String& name) {
-  int namePos = json.indexOf("\"name\":\"" + name + "\"");
-  if (namePos < 0) return "";
-
-  // TB serializes the id object as {"entityType":"DEVICE","id":"UUID"}
-  // so entityType comes BEFORE the actual UUID value.
-  // Search backward from namePos for the nearest "entityType":"DEVICE".
-  int etPos = json.lastIndexOf("\"entityType\":\"DEVICE\"", namePos);
-  if (etPos < 0 || (namePos - etPos) > 600) {
-    etPos = json.indexOf("\"entityType\":\"DEVICE\"", namePos);
-    if (etPos < 0 || (etPos - namePos) > 600) return "";
-  }
-
-  // UUID is in "id":"UUID" AFTER "entityType":"DEVICE" (within ~50 chars)
-  int idPos = json.indexOf("\"id\":\"", etPos);
-  if (idPos < 0 || (idPos - etPos) > 60) return "";
-  idPos += 6;
-  String uuid = json.substring(idPos, json.indexOf("\"", idPos));
-  return (uuid.length() >= 32) ? uuid : "";
-}
-
-static bool resolveNodeToken(const String& name, const String& deviceList, char* outTok) {
-  String deviceId = extractDeviceId(deviceList, name);
-
-  if (deviceId.length() == 0) {
-    Serial.printf("[Auth] creating %s...\n", name.c_str());
-    char body[128];
-    snprintf(body, sizeof(body), "{\"name\":\"%s\",\"type\":\"default\"}", name.c_str());
-    String createResp;
-    int code = tbPost("/api/device", body, createResp);
-    if (code != 200) { Serial.printf("[Auth] create failed %d\n", code); return false; }
-    int inner = createResp.indexOf("\"id\":{\"id\":\"");
-    if (inner < 0) return false;
-    inner += 12;
-    deviceId = createResp.substring(inner, createResp.indexOf("\"", inner));
-  }
-
-  if (deviceId.length() == 0) return false;
-
-  String credResp;
-  int code = tbGet("/api/device/" + deviceId + "/credentials", credResp);
-  if (code != 200) return false;
-
-  String tok = jsonStr(credResp, "credentialsId");
-  if (tok.length() == 0) return false;
-  tok.toCharArray(outTok, 64);
-  Serial.printf("[Auth] resolved %s\n", name.c_str());
-  return true;
 }
 
 // ── Sync node registry with ThingsBoard ───────────────────────────────────────
@@ -406,58 +307,33 @@ static void syncNodes() {
   int code = tbGet("/api/tenant/devices?pageSize=100&page=0", resp);
   if (code != 200) { Serial.printf("[Sync] devices fetch %d\n", code); return; }
 
-  // Collect TB device names that contain "node"
-  String tbNames[MAX_NODES];
-  int tbCount = 0;
+  String newNames[MAX_NODES];
+  int newCount = 0;
   int pos = 0;
-  while (tbCount < MAX_NODES) {
+  while (newCount < MAX_NODES) {
     int np = resp.indexOf("\"name\":\"", pos);
     if (np < 0) break;
     np += 8;
     int ne = resp.indexOf("\"", np);
     String name = resp.substring(np, ne);
     String lower = name; lower.toLowerCase();
-    if (lower.indexOf("node") >= 0) tbNames[tbCount++] = name;
+    if (lower.indexOf("node") >= 0) newNames[newCount++] = name;
     pos = ne + 1;
   }
 
-  // Remove nodes no longer in TB
-  for (int i = nodeCount - 1; i >= 0; i--) {
-    bool found = false;
-    for (int j = 0; j < tbCount; j++) {
-      if (nodeNames[i] == tbNames[j]) { found = true; break; }
-    }
-    if (!found) {
-      Serial.printf("[Sync] removed: %s\n", nodeNames[i].c_str());
-      for (int k = i; k < nodeCount - 1; k++) {
-        nodeNames[k] = nodeNames[k + 1];
-        memcpy(nodeToks[k], nodeToks[k + 1], 64);
-      }
-      nodeCount--;
-    }
+  bool changed = (newCount != nodeCount);
+  for (int i = 0; i < newCount && !changed; i++)
+    if (nodeNames[i] != newNames[i]) changed = true;
+
+  if (changed) {
+    nodeCount = newCount;
+    for (int i = 0; i < nodeCount; i++) nodeNames[i] = newNames[i];
+    saveNodesToNVS();
   }
 
-  // Add new nodes
-  bool changed = false;
-  for (int i = 0; i < tbCount; i++) {
-    bool known = false;
-    for (int j = 0; j < nodeCount; j++) {
-      if (nodeNames[j] == tbNames[i]) { known = true; break; }
-    }
-    if (!known && nodeCount < MAX_NODES) {
-      char tok[64] = "";
-      if (resolveNodeToken(tbNames[i], resp, tok)) {
-        nodeNames[nodeCount] = tbNames[i];
-        memcpy(nodeToks[nodeCount], tok, 64);
-        nodeCount++;
-        changed = true;
-        Serial.printf("[Sync] added: %s\n", tbNames[i].c_str());
-      }
-    }
-  }
-
-  if (changed || tbCount != nodeCount) saveNodesToNVS();
-  Serial.printf("[Sync] %d node(s) active\n", nodeCount);
+  Serial.printf("[Sync] %d node(s):", nodeCount);
+  for (int i = 0; i < nodeCount; i++) Serial.printf(" %s", nodeNames[i].c_str());
+  Serial.println();
 }
 
 // ── WiFi + NTP ────────────────────────────────────────────────────────────────
@@ -489,58 +365,21 @@ static void setupWiFi() {
   Serial.println(" (skipped)");
 }
 
-// ── POST telemetry to a specific node token ───────────────────────────────────
+// ── MQTT ──────────────────────────────────────────────────────────────────────
 
-static void postToNode(int nodeIdx, const char* buf, int len) {
-  xSemaphoreTake(tlsMux, portMAX_DELAY);
-  if (!telemClientInit || !telemClient.connected()) {
-    telemClient.stop();
-    telemClient.setInsecure();
-    telemClientInit = true;
-  }
-  HTTPClient http;
-  http.begin(telemClient, telemUrl(nodeToks[nodeIdx]));
-  http.setReuse(true);
-  http.addHeader("Content-Type", "application/json");
-  int code = http.POST((uint8_t*)buf, len);
-  http.end();
-  if (code == 401) {
-    Serial.printf("[TB] 401 for %s — re-resolve on next sync\n", nodeNames[nodeIdx].c_str());
-    nodeToks[nodeIdx][0] = '\0';
-    saveNodesToNVS();
-  } else if (code < 0) {
-    Serial.printf("[TB] %s error: %s\n", nodeNames[nodeIdx].c_str(), HTTPClient::errorToString(code).c_str());
-    telemClient.stop();
-    telemClientInit = false;
-  } else if (code >= 300) {
-    Serial.printf("[TB] %s → %d\n", nodeNames[nodeIdx].c_str(), code);
-  }
-  xSemaphoreGive(tlsMux);
+static bool mqttConnect() {
+  if (mqttClient.connected()) return true;
+  char clientId[32];
+  snprintf(clientId, sizeof(clientId), "esp32_%08X", (uint32_t)ESP.getEfuseMac());
+  bool ok = mqttClient.connect(clientId, TB_GATEWAY_TOKEN, NULL);
+  if (ok) Serial.println("[MQTT] Connected");
+  else    Serial.printf("[MQTT] Failed rc=%d — retry in 5s\n", mqttClient.state());
+  return ok;
 }
 
-// ── ECG post task — runs on core 0, loop() runs on core 1 ────────────────────
-
-static void ecgPostTask(void*) {
-  char localBuf[ECG_POST_BUF_SIZE];
-  int  localLen, localNodeIdx;
-  for (;;) {
-    ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
-    taskENTER_CRITICAL(&ecgBufMux);
-    localLen     = ecgPostLen;
-    localNodeIdx = ecgPostNodeIdx;
-    memcpy(localBuf, ecgPostBuf, localLen);
-    taskEXIT_CRITICAL(&ecgBufMux);
-    if (localNodeIdx >= 0 && localLen > 0) {
-      postToNode(localNodeIdx, localBuf, localLen);
-      Serial.printf("[Node1] wave %d bytes\n", localLen);
-    }
-  }
-}
-
-// ── Demo signal generators (phase-offset per node) ───────────────────────────
-// ECG: Gaussian spike  2048 + 2000·exp(-((phase-0.5)·20)²) + noise±20
-// Period = 200 samples = 0.8 s at 250 Hz → 75 BPM
-// Phase stagger between nodes: 67 samples (same as test-http-stream.js)
+// ── Demo signal generators ─────────────────────────────────────────────────────
+// ECG: Gaussian QRS spike, 75 BPM (period = 200 samples at 250Hz)
+// Phase offset = n * 67 samples to stagger nodes
 
 static int16_t ecgAt(uint32_t idx, int phaseOff) {
   float phase = (float)((idx + phaseOff) % 200) / 200.0f;
@@ -549,13 +388,11 @@ static int16_t ecgAt(uint32_t idx, int phaseOff) {
   return (int16_t)constrain((int)(2048.0f + v), 0, 4095);
 }
 
-// ── 250Hz sample timer ────────────────────────────────────────────────────────
+// ── 250Hz sample timer ─────────────────────────────────────────────────────────
 
 static uint32_t sampleCount = 0;
 
 static void onSampleTimer(void*) {
-  // Only need to store one channel for the timer tick; per-node signals
-  // are computed on-the-fly in publishWaveform using readySampleCount.
   ecgWork[workIdx] = ecgAt(sampleCount, 0);
   sampleCount++;
   if (++workIdx < BATCH_SIZE) return;
@@ -567,84 +404,100 @@ static void onSampleTimer(void*) {
   batchReady       = true;
 }
 
-// ── Publish waveform for all nodes ───────────────────────────────────────────
+// ── Publish ECG waveform for all nodes ────────────────────────────────────────
+// Gateway format: {"NodeName":[{"ts":epoch,"values":{"ecg_batch":"[v0,v1,...]"}}]}
+// One publish per node; phase offset = node index * 67 samples.
 
 static void publishWaveform() {
-  if (!ecgTaskHandle) return;
-  uint32_t baseIdx = readySampleCount - BATCH_SIZE;
+  if (nodeCount == 0 || !mqttConnect()) return;
+
+  uint32_t           baseIdx = readySampleCount - BATCH_SIZE;
+  unsigned long long ts      = readyTs > 0 ? readyTs : epochMs();
 
   for (int n = 0; n < nodeCount; n++) {
-    if (nodeToks[n][0] == '\0') continue;
-    if (nodeNames[n] != "Node1") continue;
-
-    char localBuf[ECG_POST_BUF_SIZE];
+    int phaseOff = n * 67;
     int pos = 0;
-    pos += snprintf(localBuf + pos, ECG_POST_BUF_SIZE - pos, "{\"ecg_batch\":\"[");
-    for (int i = 0; i < BATCH_SIZE; i++)
-      pos += snprintf(localBuf + pos, ECG_POST_BUF_SIZE - pos,
-        "%s%d", i > 0 ? "," : "", ecgAt(baseIdx + i, 0));
-    pos += snprintf(localBuf + pos, ECG_POST_BUF_SIZE - pos, "]\"}");
 
-    taskENTER_CRITICAL(&ecgBufMux);
-    memcpy(ecgPostBuf, localBuf, pos);
-    ecgPostLen     = pos;
-    ecgPostNodeIdx = n;
-    taskEXIT_CRITICAL(&ecgBufMux);
-    xTaskNotifyGive(ecgTaskHandle);
-    break;
+    pos += snprintf(payload + pos, PAYLOAD_BUF_SIZE - pos, "{\"");
+    for (unsigned int c = 0; c < nodeNames[n].length() && pos < PAYLOAD_BUF_SIZE - 2; c++)
+      payload[pos++] = nodeNames[n][c];
+    pos += snprintf(payload + pos, PAYLOAD_BUF_SIZE - pos,
+      "\":[{\"ts\":%llu,\"values\":{\"ecg_batch\":\"[", ts);
+
+    for (int i = 0; i < BATCH_SIZE && pos < PAYLOAD_BUF_SIZE - 20; i++) {
+      if (i > 0) payload[pos++] = ',';
+      pos += snprintf(payload + pos, PAYLOAD_BUF_SIZE - pos,
+        "%d", ecgAt(baseIdx + i, phaseOff));
+    }
+    pos += snprintf(payload + pos, PAYLOAD_BUF_SIZE - pos, "]\"}}]}");
+
+    bool ok = mqttClient.publish("v1/gateway/telemetry", (uint8_t*)payload, pos);
+    Serial.printf("[%s] wave %s %d bytes\n", nodeNames[n].c_str(), ok ? "OK" : "FAIL", pos);
   }
 }
 
-// ── Publish vitals for all nodes ──────────────────────────────────────────────
+// ── Publish vitals for all nodes ───────────────────────────────────────────────
+// Gateway format: {"Node1":[{...}],"Node2":[{...}],...}
 
 static void publishVitals() {
+  if (nodeCount == 0 || !mqttConnect()) return;
+
   unsigned long long ts = epochMs();
+  int pos = snprintf(payload, PAYLOAD_BUF_SIZE, "{");
+
   for (int n = 0; n < nodeCount; n++) {
-    if (nodeToks[n][0] == '\0') continue;
-    // Slight per-node variation in vitals
     float ecgHr = 72.0f + n * 3.0f;
     float spo2  = 98.5f - n * 0.3f;
     float temp  = 36.6f + n * 0.1f;
-    int pos;
+
+    if (n > 0) payload[pos++] = ',';
+    payload[pos++] = '"';
+    for (unsigned int c = 0; c < nodeNames[n].length() && pos < PAYLOAD_BUF_SIZE - 2; c++)
+      payload[pos++] = nodeNames[n][c];
+
     if (ts > 0) {
-      pos = snprintf(payload, PAYLOAD_BUF_SIZE,
-        "[{\"ts\":%llu,\"values\":"
+      pos += snprintf(payload + pos, PAYLOAD_BUF_SIZE - pos,
+        "\":[{\"ts\":%llu,\"values\":"
         "{\"ecgHeartRate\":%.1f,\"spo2\":%.1f,\"temperature\":%.1f}}]",
         ts, ecgHr, spo2, temp);
     } else {
-      pos = snprintf(payload, PAYLOAD_BUF_SIZE,
-        "[{\"values\":"
+      pos += snprintf(payload + pos, PAYLOAD_BUF_SIZE - pos,
+        "\":[{\"values\":"
         "{\"ecgHeartRate\":%.1f,\"spo2\":%.1f,\"temperature\":%.1f}}]",
         ecgHr, spo2, temp);
     }
-    postToNode(n, payload, pos);
     Serial.printf("[%s] vitals HR:%.1f SpO2:%.1f\n", nodeNames[n].c_str(), ecgHr, spo2);
   }
+  payload[pos++] = '}';
+
+  bool ok = mqttClient.publish("v1/gateway/telemetry", (uint8_t*)payload, pos);
+  if (!ok) Serial.println("[Vitals] Publish FAILED");
 }
 
 // ── setup / loop ──────────────────────────────────────────────────────────────
 
 void setup() {
   Serial.begin(115200);
-  esp_log_level_set("ssl_client",      ESP_LOG_NONE);
+  esp_log_level_set("ssl_client",       ESP_LOG_NONE);
   esp_log_level_set("WiFiClientSecure", ESP_LOG_NONE);
 
   if (!loadConfig()) {
     Serial.println("[Setup] No config — starting captive portal");
-    startConfigPortal();  // never returns; restarts after save
+    startConfigPortal();
   }
   Serial.printf("[Setup] WiFi: %s  TB: %s\n", wifiSsid, tbAdminUser);
 
   setupWiFi();
   loadNodesFromNVS();
 
-  tlsMux = xSemaphoreCreateMutex();
-  xTaskCreatePinnedToCore(ecgPostTask, "ecg_post", 32768, nullptr, 2, &ecgTaskHandle, 0);
+  mqttClient.setServer(TB_HOST, TB_MQTT_PORT);
+  mqttClient.setBufferSize(MQTT_BUF_SIZE);
 
-  // Initial node sync (blocking — ensures we have tokens before starting timer)
   Serial.println("[Setup] Initial node sync...");
   syncNodes();
   lastNodeSyncMs = millis();
+
+  mqttConnect();
 
   esp_timer_create_args_t args = {};
   args.callback = onSampleTimer;
@@ -653,10 +506,12 @@ void setup() {
   esp_timer_create(&args, &timer);
   esp_timer_start_periodic(timer, SAMPLE_INTERVAL_US);
 
-  Serial.printf("Ready — %d node(s) @ 250Hz\n", nodeCount);
+  Serial.printf("Ready — %d node(s) @ %dHz\n", nodeCount, SAMPLE_RATE_HZ);
 }
 
 void loop() {
+  mqttClient.loop();
+
   if (batchReady) {
     publishWaveform();
     batchReady = false;

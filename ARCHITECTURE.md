@@ -8,10 +8,10 @@
 │  nRF52832 Peripheral  ──BLE──►  nRF52832 Central  ──UART──►  ESP32 │
 │  (ECG/PPG sensor)               (aggregator)              (gateway) │
 └────────────────────────────────────┬────────────────────────────────┘
-                                     │ HTTPS POST  /  MQTT
+                                     │ MQTT (all telemetry)
                                      ▼
 ┌─────────────────────────────────────────────────────────────────────┐
-│                    THINGSBOARD CE  (c7.hust-2slab.org)              │
+│                    THINGSBOARD CE  (103.116.39.179)              │
 │  Gateway device  ──auto-creates──►  Node1 / Node2 / Node3           │
 │  Stores: ecg, ppg, ecgHeartRate, ppgHeartRate, spo2, temperature    │
 │  Attributes: thresholds, vitalInterval, ecgSampleFreq, patient info │
@@ -73,7 +73,7 @@ On tab close, `sessionStorage` is cleared (user must log in again).
 ```
 ThingsBoard CE
       │
-      │  wss://c7.hust-2slab.org/api/ws/plugins/telemetry?token=<JWT>
+      │  wss://103.116.39.179/api/ws/plugins/telemetry?token=<JWT>
       │
       ▼
 useTbWebSocket hook (browser)
@@ -100,46 +100,38 @@ React re-render thrashing on high-frequency ECG data.
 ### Firmware → ThingsBoard
 
 ```
-ESP32 (every ecgPacketInterval ms)
+ESP32 (every WAVE_INTERVAL_MS — 200ms for 50-sample batches)
   │
-  │  POST https://wearable-server.vercel.app/api/telemetry/ingest
+  │  MQTT PUBLISH  mqtt://103.116.39.179:1883
+  │  Topic:  v1/gateway/telemetry
+  │  Auth:   TB_GATEWAY_ACCESS_TOKEN as MQTT username
   │  Body: {
-  │    deviceName: "Node1",
-  │    ts: 1234567890,
-  │    ecg_batch: "[2048, 2391, 1876, ...]",   ← JSON string, N samples
-  │    ppg_batch: "[2048, 2100, 2050, ...]"
+  │    "Node1": [{ "ts": epochMs, "values": { "ecg_batch": "[2048,2391,...]" } }],
+  │    "Node4": [{ "ts": epochMs, "values": { "ecg_batch": "[...]" } }]
   │  }
   │
   ▼
-pages/api/telemetry/ingest.js  (Next.js serverless — runs on Vercel)
-  │
-  │  1. Resolve device by name (auto-creates if new)
-  │  2. Reconstruct per-sample timestamps:
-  │       sampleTs = batchTs - (N-1-i) × (1000 / ecgSampleFreq) ms
-  │  3. POST chunks of ≤50 points to TB device API:
-  │       POST /api/v1/{deviceToken}/telemetry
-  │       Body: [{ ts, values: { ecg, ppg } }, ...]
+ThingsBoard gateway API auto-creates leaf devices on first publish
   │
   ▼
-ThingsBoard stores ecg/ppg as individual time-series points
+TB stores ecg_batch as a time-series key (ts = explicit epoch from payload)
   │
   ▼
-WebSocket pushes ecg_batch / ppg_batch to dashboard
+WebSocket pushes ecg_batch to dashboard
   │
   ▼
 parseWaveformBatch() reconstructs timestamps client-side
   │
   ▼
-TrendChart (isLiveWaveform) renders scrolling ECG/PPG waveform
+TrendChart (isLiveWaveform) renders scrolling ECG waveform
 ```
 
 ### Sample timestamp reconstruction
 
-When TB stores a batch, it assigns **one server timestamp** to the whole array.
-`parseWaveformBatch()` reconstructs individual timestamps by working backwards:
+`parseWaveformBatch()` works backwards from the stored batch timestamp:
 
 ```
-sample[N-1].ts = batchTs            (latest sample = server timestamp)
+sample[N-1].ts = batchTs            (latest sample = batch timestamp)
 sample[N-2].ts = batchTs - interval
 sample[N-3].ts = batchTs - 2×interval
 ...
@@ -151,19 +143,17 @@ interval = 1000 / ecgSampleFreq  (ms per sample)
 ## 4. Vitals Flow (Heart Rate, SpO2, Temperature)
 
 ```
-ESP32 (every vitalInterval ms)
+ESP32 (every VITAL_INTERVAL_MS — 15s)
   │
-  │  POST /api/telemetry/ingest
+  │  MQTT PUBLISH  mqtt://103.116.39.179:1883
+  │  Topic:  v1/gateway/telemetry
   │  Body: {
-  │    deviceName:   "Node1",
-  │    ecgHeartRate: 72.5,
-  │    ppgHeartRate: 71.0,
-  │    spo2:         98.2,
-  │    temperature:  36.6
+  │    "Node1": [{ "ts": epochMs, "values": {
+  │      "ecgHeartRate": 72.5, "ppgHeartRate": 71.0,
+  │      "spo2": 98.2, "temperature": 36.6
+  │    }}],
+  │    "Node4": [{ ... }]
   │  }
-  │
-  ▼
-ingest.js → POST to TB device API as single telemetry entry
   │
   ▼
 ThingsBoard stores as LATEST_TELEMETRY
@@ -171,9 +161,6 @@ ThingsBoard stores as LATEST_TELEMETRY
   ▼
 WebSocket delivers to dashboard → VitalCard renders with threshold colors
 ```
-
-**Legacy compatibility**: old firmware sending `heartRate` is mapped to
-`ppgHeartRate` transparently in `ingest.js`.
 
 ---
 
