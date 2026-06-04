@@ -325,7 +325,7 @@ export default function PrintModal({ devices, onClose }) {
             {/* Report header */}
             <div style={{ borderBottom:"2px solid #00c8ff", paddingBottom:12, marginBottom:20, display:"flex", justifyContent:"space-between", alignItems:"flex-end" }}>
               <div>
-                <div style={{ fontSize:22, fontWeight:700, color:"#00c8ff", letterSpacing:"0.06em" }}>VITALSYNC</div>
+                <div style={{ fontSize:22, fontWeight:700, color:"#00c8ff", letterSpacing:"0.06em" }}>WearableDev</div>
                 <div style={{ fontSize:11, color:"#64748b", marginTop:2 }}>Health Monitoring System — Patient Report</div>
               </div>
               <div style={{ fontSize:11, color:"#64748b", textAlign:"right" }}>
@@ -402,7 +402,7 @@ export default function PrintModal({ devices, onClose }) {
 
             {/* Footer */}
             <div style={{ borderTop:"1px solid #e2e8f0", paddingTop:10, marginTop:20, fontSize:10, color:"#94a3b8", display:"flex", justifyContent:"space-between" }}>
-              <span>VitalSync Health Monitoring System</span>
+              <span>WearableDev Health Monitoring System</span>
               <span>This report is generated automatically and should be reviewed by a qualified physician.</span>
             </div>
           </div>

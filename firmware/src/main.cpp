@@ -11,10 +11,12 @@
 //   TB gateway API auto-creates leaf devices on first publish.
 //
 // Telemetry: MQTT gateway API (v1/gateway/telemetry, port 1883).
-// Admin API (node discovery): HTTPS via adminClient.
+// Admin API (node discovery): HTTPS via WiFiClientSecure → c7.hust-2slab.org (Cloudflare).
 // ─────────────────────────────────────────────────────────────────────────────
 
 #include <Arduino.h>
+#include "soc/soc.h"
+#include "soc/rtc_cntl_reg.h"
 #include <WiFi.h>
 #include <WiFiClientSecure.h>
 #include <HTTPClient.h>
@@ -23,7 +25,9 @@
 #include <Preferences.h>
 #include <PubSubClient.h>
 #include <esp_timer.h>
+#include <WiFiClientSecure.h>
 #include <freertos/task.h>
+#include <freertos/semphr.h>
 #include <time.h>
 #include <math.h>
 
@@ -38,8 +42,8 @@ const char* TB_HOST = "103.116.39.179";
 #define SAMPLE_RATE_HZ        250
 #define SAMPLE_INTERVAL_US    (1000000 / SAMPLE_RATE_HZ)
 #define SAMPLE_INTERVAL_MS    (1000 / SAMPLE_RATE_HZ)
-#define BATCH_SIZE            250
-#define VITAL_INTERVAL_MS     15000
+#define BATCH_SIZE            50      // 50 samples × 4ms = 200ms per batch
+#define VITAL_INTERVAL_MS     5000
 #define NODE_SYNC_INTERVAL_MS 10000
 #define PAYLOAD_BUF_SIZE      4096
 #define MAX_NODES             16
@@ -53,8 +57,30 @@ static char tbAdminPass[64] = "";
 
 // ── Node registry ─────────────────────────────────────────────────────────────
 
-static String nodeNames[MAX_NODES];
-static int    nodeCount = 0;
+static String            nodeNames[MAX_NODES];
+static int               nodeCount = 0;
+static SemaphoreHandle_t nodeMutex;
+
+// Per-node vital state — lazy-initialised on first publishVitals call.
+// Default bases match test-direct-stream.js (Node1, Node4, Node6 order).
+static float nodeHr[MAX_NODES]   = {};
+static float nodeSpo2[MAX_NODES] = {};
+static float nodeTemp[MAX_NODES] = {};
+
+static const float kHrDef[]   = {67.0f, 75.0f, 65.0f};
+static const float kSpo2Def[] = {98.3f, 98.1f, 97.8f};
+static const float kTempDef[] = {36.4f, 36.8f, 36.4f};
+static const int   kNDef      = 3;
+
+static void initNodeVitals(int n) {
+  nodeHr[n]   = n < kNDef ? kHrDef[n]   : 72.0f + n * 2.0f;
+  nodeSpo2[n] = n < kNDef ? kSpo2Def[n] : 98.5f - n * 0.2f;
+  nodeTemp[n] = n < kNDef ? kTempDef[n] : 36.6f + n * 0.1f;
+}
+
+static float frand() {
+  return ((float)(rand() % 1000) - 500.0f) / 500.0f;  // -1.0 to 1.0
+}
 
 // ── Runtime state ─────────────────────────────────────────────────────────────
 
@@ -78,8 +104,7 @@ static volatile uint32_t           readySampleCount = 0;
 static volatile bool               batchReady       = false;
 static int workIdx = 0;
 
-static unsigned long lastVitalMs    = 0;
-static unsigned long lastNodeSyncMs = 0;
+static unsigned long lastVitalMs = 0;
 static char          payload[PAYLOAD_BUF_SIZE];
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
@@ -91,8 +116,10 @@ static unsigned long long epochMs() {
   return (unsigned long long)tv.tv_sec * 1000ULL + tv.tv_usec / 1000ULL;
 }
 
+static const char* TB_ADMIN_HOST = "c7.hust-2slab.org";
+
 static String tbUrl(const String& path) {
-  return String("https://") + TB_HOST + path;
+  return String("https://") + TB_ADMIN_HOST + path;
 }
 
 static String jsonStr(const String& json, const String& key) {
@@ -321,19 +348,29 @@ static void syncNodes() {
     pos = ne + 1;
   }
 
+  xSemaphoreTake(nodeMutex, portMAX_DELAY);
   bool changed = (newCount != nodeCount);
   for (int i = 0; i < newCount && !changed; i++)
     if (nodeNames[i] != newNames[i]) changed = true;
-
   if (changed) {
     nodeCount = newCount;
     for (int i = 0; i < nodeCount; i++) nodeNames[i] = newNames[i];
-    saveNodesToNVS();
   }
+  xSemaphoreGive(nodeMutex);
 
-  Serial.printf("[Sync] %d node(s):", nodeCount);
-  for (int i = 0; i < nodeCount; i++) Serial.printf(" %s", nodeNames[i].c_str());
+  if (changed) saveNodesToNVS();
+
+  Serial.printf("[Sync] %d node(s):", newCount);
+  for (int i = 0; i < newCount; i++) Serial.printf(" %s", newNames[i].c_str());
   Serial.println();
+}
+
+// Runs on Core 0 — HTTPS never blocks the ECG publish loop on Core 1.
+static void nodeSyncTask(void*) {
+  for (;;) {
+    syncNodes();
+    vTaskDelay(pdMS_TO_TICKS(NODE_SYNC_INTERVAL_MS));
+  }
 }
 
 // ── WiFi + NTP ────────────────────────────────────────────────────────────────
@@ -414,13 +451,19 @@ static void publishWaveform() {
   uint32_t           baseIdx = readySampleCount - BATCH_SIZE;
   unsigned long long ts      = readyTs > 0 ? readyTs : epochMs();
 
-  for (int n = 0; n < nodeCount; n++) {
+  xSemaphoreTake(nodeMutex, portMAX_DELAY);
+  int    snap = nodeCount;
+  String snapNames[MAX_NODES];
+  for (int i = 0; i < snap; i++) snapNames[i] = nodeNames[i];
+  xSemaphoreGive(nodeMutex);
+
+  for (int n = 0; n < snap; n++) {
     int phaseOff = n * 67;
     int pos = 0;
 
     pos += snprintf(payload + pos, PAYLOAD_BUF_SIZE - pos, "{\"");
-    for (unsigned int c = 0; c < nodeNames[n].length() && pos < PAYLOAD_BUF_SIZE - 2; c++)
-      payload[pos++] = nodeNames[n][c];
+    for (unsigned int c = 0; c < snapNames[n].length() && pos < PAYLOAD_BUF_SIZE - 2; c++)
+      payload[pos++] = snapNames[n][c];
     pos += snprintf(payload + pos, PAYLOAD_BUF_SIZE - pos,
       "\":[{\"ts\":%llu,\"values\":{\"ecg_batch\":\"[", ts);
 
@@ -432,7 +475,7 @@ static void publishWaveform() {
     pos += snprintf(payload + pos, PAYLOAD_BUF_SIZE - pos, "]\"}}]}");
 
     bool ok = mqttClient.publish("v1/gateway/telemetry", (uint8_t*)payload, pos);
-    Serial.printf("[%s] wave %s %d bytes\n", nodeNames[n].c_str(), ok ? "OK" : "FAIL", pos);
+    Serial.printf("[%s] wave %s %d bytes\n", snapNames[n].c_str(), ok ? "OK" : "FAIL", pos);
   }
 }
 
@@ -440,33 +483,43 @@ static void publishWaveform() {
 // Gateway format: {"Node1":[{...}],"Node2":[{...}],...}
 
 static void publishVitals() {
-  if (nodeCount == 0 || !mqttConnect()) return;
+  xSemaphoreTake(nodeMutex, portMAX_DELAY);
+  int    snap = nodeCount;
+  String snapNames[MAX_NODES];
+  for (int i = 0; i < snap; i++) snapNames[i] = nodeNames[i];
+  xSemaphoreGive(nodeMutex);
+
+  if (snap == 0 || !mqttConnect()) return;
 
   unsigned long long ts = epochMs();
   int pos = snprintf(payload, PAYLOAD_BUF_SIZE, "{");
 
-  for (int n = 0; n < nodeCount; n++) {
-    float ecgHr = 72.0f + n * 3.0f;
-    float spo2  = 98.5f - n * 0.3f;
-    float temp  = 36.6f + n * 0.1f;
+  for (int n = 0; n < snap; n++) {
+    // Lazy-init on first call, then random walk (mirrors test-direct-stream.js)
+    if (nodeHr[n] == 0.0f) initNodeVitals(n);
+    nodeHr[n]   = constrain(nodeHr[n]   + frand() * 1.0f,   50.0f, 110.0f);
+    nodeSpo2[n] = constrain(nodeSpo2[n] + frand() * 0.15f,  93.0f, 100.0f);
+    nodeTemp[n] = constrain(nodeTemp[n] + frand() * 0.05f, 36.0f,  37.8f);
+    float ppgHr = nodeHr[n] - 1.0f + frand() * 0.5f;
 
     if (n > 0) payload[pos++] = ',';
     payload[pos++] = '"';
-    for (unsigned int c = 0; c < nodeNames[n].length() && pos < PAYLOAD_BUF_SIZE - 2; c++)
-      payload[pos++] = nodeNames[n][c];
+    for (unsigned int c = 0; c < snapNames[n].length() && pos < PAYLOAD_BUF_SIZE - 2; c++)
+      payload[pos++] = snapNames[n][c];
 
     if (ts > 0) {
       pos += snprintf(payload + pos, PAYLOAD_BUF_SIZE - pos,
         "\":[{\"ts\":%llu,\"values\":"
-        "{\"ecgHeartRate\":%.1f,\"spo2\":%.1f,\"temperature\":%.1f}}]",
-        ts, ecgHr, spo2, temp);
+        "{\"ecgHeartRate\":%.1f,\"ppgHeartRate\":%.1f,\"spo2\":%.1f,\"temperature\":%.1f}}]",
+        ts, nodeHr[n], ppgHr, nodeSpo2[n], nodeTemp[n]);
     } else {
       pos += snprintf(payload + pos, PAYLOAD_BUF_SIZE - pos,
         "\":[{\"values\":"
-        "{\"ecgHeartRate\":%.1f,\"spo2\":%.1f,\"temperature\":%.1f}}]",
-        ecgHr, spo2, temp);
+        "{\"ecgHeartRate\":%.1f,\"ppgHeartRate\":%.1f,\"spo2\":%.1f,\"temperature\":%.1f}}]",
+        nodeHr[n], ppgHr, nodeSpo2[n], nodeTemp[n]);
     }
-    Serial.printf("[%s] vitals HR:%.1f SpO2:%.1f\n", nodeNames[n].c_str(), ecgHr, spo2);
+    Serial.printf("[%s] vitals ECG-HR:%.1f PPG-HR:%.1f SpO2:%.1f\n",
+      snapNames[n].c_str(), nodeHr[n], ppgHr, nodeSpo2[n]);
   }
   payload[pos++] = '}';
 
@@ -477,9 +530,9 @@ static void publishVitals() {
 // ── setup / loop ──────────────────────────────────────────────────────────────
 
 void setup() {
+  WRITE_PERI_REG(RTC_CNTL_BROWN_OUT_REG, 0);  // suppress brownout on WiFi startup
   Serial.begin(115200);
   esp_log_level_set("ssl_client",       ESP_LOG_NONE);
-  esp_log_level_set("WiFiClientSecure", ESP_LOG_NONE);
 
   if (!loadConfig()) {
     Serial.println("[Setup] No config — starting captive portal");
@@ -493,9 +546,8 @@ void setup() {
   mqttClient.setServer(TB_HOST, TB_MQTT_PORT);
   mqttClient.setBufferSize(MQTT_BUF_SIZE);
 
-  Serial.println("[Setup] Initial node sync...");
-  syncNodes();
-  lastNodeSyncMs = millis();
+  nodeMutex = xSemaphoreCreateMutex();
+  xTaskCreatePinnedToCore(nodeSyncTask, "nodeSync", 8192, NULL, 1, NULL, 0);
 
   mqttConnect();
 
@@ -524,8 +576,4 @@ void loop() {
     publishVitals();
   }
 
-  if (nowMs - lastNodeSyncMs >= NODE_SYNC_INTERVAL_MS) {
-    lastNodeSyncMs = nowMs;
-    syncNodes();
-  }
 }

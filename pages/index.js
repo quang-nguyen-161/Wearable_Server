@@ -724,6 +724,9 @@ export default function Dashboard() {
   const [ecgEnabledMap,    setEcgEnabledMap]    = useState({});
   const [ecgYMin,          setEcgYMin]          = useState(-7000);
   const [ecgYMax,          setEcgYMax]          = useState(7000);
+  const [ecgZoomInput,     setEcgZoomInput]     = useState("7");
+  const [ecgPaused,        setEcgPaused]        = useState(false);
+  const pausedEcgDataRef                        = useRef(null);
   const [printModal,       setPrintModal]       = useState(false);
   const [otaModal,         setOtaModal]         = useState(false);
   const [overviewModal,    setOverviewModal]    = useState(false);
@@ -1208,8 +1211,8 @@ export default function Dashboard() {
               <div className="chart-header">
                 <span className="chart-title">ECG SIGNAL</span>
                 <span className="chart-subtitle">(Live · {settings.ecgSampleFreq}Hz · pkt {settings.ecgPacketInterval}ms)</span>
-                <span className="chart-badge" style={{ color: noSignal ? "var(--amber)" : "var(--green)" }}>
-                  {noSignal ? "NO SIGNAL" : "LIVE"}
+                <span className="chart-badge" style={{ color: ecgPaused ? "var(--amber,#f59e0b)" : noSignal ? "var(--amber)" : "var(--green)" }}>
+                  {ecgPaused ? "PAUSED" : noSignal ? "NO SIGNAL" : "LIVE"}
                 </span>
                 <span className="chart-expand-hint">⤢ EXPAND</span>
               </div>
@@ -1243,20 +1246,46 @@ export default function Dashboard() {
                 <div style={{ display: "flex", alignItems: "center", gap: 4, marginLeft: 6 }}>
                   <span style={{ fontSize: 10, fontWeight: 700, letterSpacing: "0.1em", color: "var(--text-muted, #94a3b8)" }}>ZOOM</span>
                   <button
-                    onClick={() => { const h = Math.round(Math.abs(ecgYMax) * 1.5); setEcgYMin(-h); setEcgYMax(h); }}
+                    onClick={() => { const h = Math.round(Math.abs(ecgYMax) * 1.5); setEcgYMin(-h); setEcgYMax(h); setEcgZoomInput(String((h / 1000).toFixed(1))); }}
                     title="Zoom out"
                     style={{ width: 24, height: 24, borderRadius: 5, border: "1px solid var(--border,#e2e8f0)", background: "var(--bg-void,#f1f5f9)", cursor: "pointer", fontSize: 15, lineHeight: 1, fontFamily: "inherit", color: "var(--text-muted,#94a3b8)", display: "flex", alignItems: "center", justifyContent: "center" }}
                   >−</button>
-                  <span style={{ fontSize: 10, color: "var(--text-muted,#94a3b8)", minWidth: 44, textAlign: "center" }}>±{(ecgYMax/1000).toFixed(1)}k</span>
+                  <span style={{ fontSize: 10, color: "var(--text-muted,#94a3b8)" }}>±</span>
+                  <input
+                    type="number"
+                    value={ecgZoomInput}
+                    onChange={e => setEcgZoomInput(e.target.value)}
+                    onBlur={() => {
+                      const k = parseFloat(ecgZoomInput);
+                      if (!isNaN(k) && k > 0) { const h = Math.round(k * 1000); setEcgYMin(-h); setEcgYMax(h); }
+                      else setEcgZoomInput(String((ecgYMax / 1000).toFixed(1)));
+                    }}
+                    onKeyDown={e => { if (e.key === "Enter") e.target.blur(); }}
+                    title="Y-axis range in k (e.g. 7 = ±7000)"
+                    style={{ width: 52, height: 24, borderRadius: 5, border: "1px solid var(--border,#e2e8f0)", background: "var(--bg-void,#f1f5f9)", cursor: "text", fontSize: 11, fontFamily: "inherit", color: "var(--text-muted,#94a3b8)", textAlign: "center", padding: "0 4px" }}
+                  />
+                  <span style={{ fontSize: 10, color: "var(--text-muted,#94a3b8)" }}>k</span>
                   <button
-                    onClick={() => { const h = Math.max(100, Math.round(Math.abs(ecgYMax) / 1.5)); setEcgYMin(-h); setEcgYMax(h); }}
+                    onClick={() => { const h = Math.max(100, Math.round(Math.abs(ecgYMax) / 1.5)); setEcgYMin(-h); setEcgYMax(h); setEcgZoomInput(String((h / 1000).toFixed(1))); }}
                     title="Zoom in"
                     style={{ width: 24, height: 24, borderRadius: 5, border: "1px solid var(--border,#e2e8f0)", background: "var(--bg-void,#f1f5f9)", cursor: "pointer", fontSize: 15, lineHeight: 1, fontFamily: "inherit", color: "var(--text-muted,#94a3b8)", display: "flex", alignItems: "center", justifyContent: "center" }}
                   >+</button>
                 </div>
+
+                {/* Pause / Resume live graph */}
+                <button
+                  onClick={() => {
+                    if (!ecgPaused) { pausedEcgDataRef.current = ecgData; }
+                    setEcgPaused(p => !p);
+                  }}
+                  title={ecgPaused ? "Resume live graph" : "Pause graph"}
+                  style={{ marginLeft: 6, height: 24, padding: "0 10px", borderRadius: 5, border: "1px solid var(--border,#e2e8f0)", background: ecgPaused ? "var(--amber,#f59e0b)" : "var(--bg-void,#f1f5f9)", cursor: "pointer", fontSize: 10, fontWeight: 700, fontFamily: "inherit", color: ecgPaused ? "#fff" : "var(--text-muted,#94a3b8)", letterSpacing: "0.05em", display: "flex", alignItems: "center", gap: 4 }}
+                >
+                  {ecgPaused ? "▶ RESUME" : "⏸ PAUSE"}
+                </button>
               </div>
               <TrendChart
-                series={ecgData}
+                series={ecgPaused ? pausedEcgDataRef.current : ecgData}
                 metricKey="ecg"
                 loading={false}
                 isLiveWaveform={true}
