@@ -2,17 +2,9 @@
 // Popup modal showing full vitals + ECG/PPG history for a selected node.
 // Fetches historical data from /api/telemetry/history when opened.
 
-import { useState, useEffect, useCallback } from "react";
-import TrendChart from "./TrendChart";
+import { useState, useEffect } from "react";
 import { useTbAuth } from "../context/TbAuthContext";
-import { getTelemetryHistory } from "../lib/tbBrowserClient";
-
-const TIME_RANGES = [
-  { label: "15 min", hours: 0.25 },
-  { label: "1 hour", hours: 1 },
-  { label: "6 hours", hours: 6 },
-  { label: "24 hours", hours: 24 },
-];
+import { getDeviceAttributes, saveDeviceAttributes } from "../lib/tbBrowserClient";
 
 const VITALS_CONFIG = [
   { key: "ppgHeartRate", label: "PPG HEART RATE", unit: "bpm", color: "#5B9BD5", min: 60,   max: 100,  warnMin: 50,  warnMax: 120, dangerMin: 40,  dangerMax: 130  },
@@ -38,26 +30,40 @@ function getStatusColor(status) {
 
 export default function NodeDetailModal({ device, vitals, onClose }) {
   const { token } = useTbAuth();
-  const [rangeIdx,      setRangeIdx]      = useState(1); // default 1 hour
-  const [ecgHistory,    setEcgHistory]    = useState([]);
-  const [historyLoading, setHistoryLoading] = useState(false);
+  const [bleAddr,       setBleAddr]       = useState("");
+  const [bleInput,      setBleInput]      = useState("");
+  const [bleEditing,    setBleEditing]    = useState(false);
+  const [bleSaving,     setBleSaving]     = useState(false);
+  const [bleSaved,      setBleSaved]      = useState(false);
 
-  const fetchHistory = useCallback(async (hours) => {
+  // Load BLE address from ThingsBoard SHARED_SCOPE attributes
+  useEffect(() => {
     if (!device?.id || !token) return;
-    setHistoryLoading(true);
-    try {
-      const series = await getTelemetryHistory(token, device.id, "ecg", hours, 2000);
-      setEcgHistory(series);
-    } catch (e) {
-      console.error("History fetch error:", e);
-    } finally {
-      setHistoryLoading(false);
-    }
+    getDeviceAttributes(token, device.id)
+      .then(attrs => {
+        const addr = attrs.bleAddress || "";
+        setBleAddr(addr);
+        setBleInput(addr);
+      })
+      .catch(() => {});
   }, [device?.id, token]);
 
-  useEffect(() => {
-    fetchHistory(TIME_RANGES[rangeIdx].hours);
-  }, [rangeIdx, fetchHistory]);
+  const saveBleAddr = async () => {
+    const trimmed = bleInput.trim().toLowerCase();
+    if (!trimmed) return;
+    setBleSaving(true);
+    try {
+      await saveDeviceAttributes(token, device.id, "SHARED_SCOPE", { bleAddress: trimmed });
+      setBleAddr(trimmed);
+      setBleEditing(false);
+      setBleSaved(true);
+      setTimeout(() => setBleSaved(false), 2000);
+    } catch (e) {
+      console.error("Save BLE address:", e);
+    } finally {
+      setBleSaving(false);
+    }
+  };
 
   // Close on backdrop click
   const handleBackdrop = (e) => {
@@ -84,21 +90,43 @@ export default function NodeDetailModal({ device, vitals, onClose }) {
             <div>
               <div className="modal-device-name">{device.patientName || device.name}</div>
               <div className="modal-device-id">{device.name} · {device.id}</div>
+              <div className="modal-ble-row">
+                <span className="ble-label">BLE</span>
+                {bleEditing ? (
+                  <>
+                    <input
+                      className="ble-input"
+                      value={bleInput}
+                      onChange={e => setBleInput(e.target.value)}
+                      onKeyDown={e => {
+                        if (e.key === "Enter") saveBleAddr();
+                        if (e.key === "Escape") { setBleEditing(false); setBleInput(bleAddr); }
+                      }}
+                      placeholder="xx:xx:xx:xx:xx:xx"
+                      spellCheck={false}
+                      autoFocus
+                    />
+                    <button className="ble-btn ble-btn--save" onClick={saveBleAddr} disabled={bleSaving}>
+                      {bleSaving ? "…" : "Save"}
+                    </button>
+                    <button className="ble-btn ble-btn--cancel" onClick={() => { setBleEditing(false); setBleInput(bleAddr); }}>
+                      Cancel
+                    </button>
+                  </>
+                ) : (
+                  <>
+                    <span className="ble-addr">{bleAddr || "not set"}</span>
+                    {bleSaved && <span className="ble-saved">Saved</span>}
+                    <button className="ble-btn ble-btn--edit" onClick={() => { setBleEditing(true); setBleInput(bleAddr); }}>
+                      Edit
+                    </button>
+                  </>
+                )}
+              </div>
             </div>
             <span className="modal-live-pill">LIVE</span>
           </div>
           <div className="modal-header-right">
-            <div className="range-tabs">
-              {TIME_RANGES.map((r, i) => (
-                <button
-                  key={r.label}
-                  className={`range-tab ${rangeIdx === i ? "range-tab--active" : ""}`}
-                  onClick={() => setRangeIdx(i)}
-                >
-                  {r.label}
-                </button>
-              ))}
-            </div>
             <button className="modal-close" onClick={onClose} aria-label="Close">×</button>
           </div>
         </div>
@@ -121,21 +149,6 @@ export default function NodeDetailModal({ device, vitals, onClose }) {
               </div>
             );
           })}
-        </div>
-
-        {/* ── Signal tabs ── */}
-        <div className="modal-signal-tabs">
-          <button className="signal-tab signal-tab--active">ECG Signal</button>
-          <span className="signal-range-label">{TIME_RANGES[rangeIdx].label} history</span>
-        </div>
-
-        {/* ── Chart ── */}
-        <div className="modal-chart">
-          <TrendChart
-            series={ecgHistory}
-            metricKey="ecg"
-            loading={historyLoading}
-          />
         </div>
 
       </div>
@@ -200,6 +213,79 @@ export default function NodeDetailModal({ device, vitals, onClose }) {
           font-family: monospace;
         }
 
+        .modal-ble-row {
+          display: flex;
+          align-items: center;
+          gap: 6px;
+          margin-top: 4px;
+        }
+
+        .ble-label {
+          font-size: 10px;
+          font-weight: 700;
+          letter-spacing: 0.08em;
+          color: var(--text-muted, #94a3b8);
+          background: var(--surface-2, #f1f5f9);
+          border-radius: 4px;
+          padding: 1px 5px;
+        }
+
+        .ble-addr {
+          font-size: 11px;
+          font-family: monospace;
+          color: var(--text-muted, #94a3b8);
+        }
+
+        .ble-input {
+          font-size: 11px;
+          font-family: monospace;
+          padding: 2px 6px;
+          border-radius: 5px;
+          border: 1px solid #5B9BD5;
+          outline: none;
+          background: var(--card-bg, #fff);
+          color: var(--text, #1e293b);
+          width: 150px;
+        }
+
+        .ble-btn {
+          font-size: 10px;
+          font-weight: 600;
+          padding: 2px 8px;
+          border-radius: 5px;
+          border: 1px solid transparent;
+          cursor: pointer;
+          font-family: inherit;
+          transition: all 0.15s;
+        }
+
+        .ble-btn--edit {
+          color: #5B9BD5;
+          background: transparent;
+          border-color: #5B9BD5;
+        }
+        .ble-btn--edit:hover { background: rgba(91,155,213,0.1); }
+
+        .ble-btn--save {
+          color: #fff;
+          background: #22c55e;
+          border-color: #22c55e;
+        }
+        .ble-btn--save:disabled { opacity: 0.6; cursor: not-allowed; }
+
+        .ble-btn--cancel {
+          color: var(--text-muted, #94a3b8);
+          background: transparent;
+          border-color: var(--border, #e2e8f0);
+        }
+
+        .ble-saved {
+          font-size: 10px;
+          font-weight: 600;
+          color: #22c55e;
+          letter-spacing: 0.06em;
+        }
+
         .modal-live-pill {
           font-size: 10px;
           font-weight: 700;
@@ -214,34 +300,6 @@ export default function NodeDetailModal({ device, vitals, onClose }) {
           display: flex;
           align-items: center;
           gap: 10px;
-        }
-
-        .range-tabs {
-          display: flex;
-          gap: 4px;
-          background: var(--surface-2, #f1f5f9);
-          border-radius: 8px;
-          padding: 3px;
-        }
-
-        .range-tab {
-          font-size: 11px;
-          font-weight: 600;
-          letter-spacing: 0.04em;
-          padding: 4px 10px;
-          border-radius: 6px;
-          border: none;
-          background: transparent;
-          color: var(--text-muted, #94a3b8);
-          cursor: pointer;
-          transition: all 0.15s;
-          font-family: inherit;
-        }
-
-        .range-tab--active {
-          background: var(--card-bg, #fff);
-          color: var(--text, #1e293b);
-          box-shadow: 0 1px 3px rgba(0,0,0,0.1);
         }
 
         .modal-close {
@@ -263,8 +321,7 @@ export default function NodeDetailModal({ device, vitals, onClose }) {
           display: grid;
           grid-template-columns: repeat(3, 1fr);
           gap: 12px;
-          padding: 16px 20px;
-          border-bottom: 1px solid var(--border, #e2e8f0);
+          padding: 16px 20px 20px;
         }
 
         .modal-vital-card {
@@ -302,70 +359,20 @@ export default function NodeDetailModal({ device, vitals, onClose }) {
           letter-spacing: 0.08em;
         }
 
-        .modal-signal-tabs {
-          display: flex;
-          align-items: center;
-          gap: 4px;
-          padding: 12px 20px 0;
-        }
-
-        .signal-tab {
-          font-size: 12px;
-          font-weight: 600;
-          letter-spacing: 0.04em;
-          padding: 6px 14px;
-          border-radius: 8px 8px 0 0;
-          border: 1px solid transparent;
-          border-bottom: none;
-          background: transparent;
-          color: var(--text-muted, #94a3b8);
-          cursor: pointer;
-          transition: all 0.15s;
-          font-family: inherit;
-        }
-
-        .signal-tab--active {
-          background: var(--card-bg, #fff);
-          border-color: var(--border, #e2e8f0);
-          color: var(--text, #1e293b);
-        }
-
-        .signal-range-label {
-          margin-left: auto;
-          font-size: 10px;
-          letter-spacing: 0.08em;
-          color: var(--text-muted, #94a3b8);
-          font-weight: 600;
-          padding-right: 4px;
-        }
-
-        .modal-chart {
-          padding: 0 20px 20px;
-          border-top: 1px solid var(--border, #e2e8f0);
-          min-height: 200px;
-        }
-
         /* Dark mode */
         :global([data-theme="dark"]) .modal-box {
           background: #1e293b;
           border-color: #334155;
         }
-        :global([data-theme="dark"]) .modal-header,
-        :global([data-theme="dark"]) .modal-vitals,
-        :global([data-theme="dark"]) .modal-chart {
+        :global([data-theme="dark"]) .modal-header {
           border-color: #334155;
         }
         :global([data-theme="dark"]) .modal-device-name { color: #e2e8f0; }
+        :global([data-theme="dark"]) .ble-label { background: #0f172a; }
+        :global([data-theme="dark"]) .ble-input { background: #0f172a; color: #e2e8f0; border-color: #5B9BD5; }
         :global([data-theme="dark"]) .modal-vital-card {
           background: #0f172a;
           border-color: #334155;
-        }
-        :global([data-theme="dark"]) .range-tabs { background: #0f172a; }
-        :global([data-theme="dark"]) .range-tab--active { background: #1e293b; color: #e2e8f0; }
-        :global([data-theme="dark"]) .signal-tab--active {
-          background: #1e293b;
-          border-color: #334155;
-          color: #e2e8f0;
         }
         :global([data-theme="dark"]) .modal-close:hover { background: #334155; }
       `}</style>
