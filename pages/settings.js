@@ -202,7 +202,7 @@ export default function Settings() {
 
   // ── Threshold field helper ─────────────────────────────────────────────
   const setField = (vital, field, raw) => {
-    const val = parseFloat(raw);
+    const val = vital === 'temperature' ? parseFloat(raw) : parseInt(raw, 10);
     if (isNaN(val)) return;
     setThresholds(prev => ({
       ...prev,
@@ -264,6 +264,7 @@ export default function Settings() {
 
             {Object.entries(thresholds).map(([vital, vals]) => {
               const meta = VITAL_LABELS[vital];
+              const step = vital === 'temperature' ? "0.1" : "1";
               return (
                 <div className="threshold-card" key={vital}>
                   <div className="threshold-card-header">
@@ -276,13 +277,13 @@ export default function Settings() {
                       <div className="tier-fields">
                         <label className="threshold-field normal">
                           <span>Min</span>
-                          <input type="number" step="0.1"
+                          <input type="number" step={step}
                             value={vals.normalMin}
                             onChange={e => setField(vital, "normalMin", e.target.value)} />
                         </label>
                         <label className="threshold-field normal">
                           <span>Max</span>
-                          <input type="number" step="0.1"
+                          <input type="number" step={step}
                             value={vals.normalMax}
                             onChange={e => setField(vital, "normalMax", e.target.value)} />
                         </label>
@@ -293,13 +294,13 @@ export default function Settings() {
                       <div className="tier-fields">
                         <label className="threshold-field warning">
                           <span>Min</span>
-                          <input type="number" step="0.1"
+                          <input type="number" step={step}
                             value={vals.warnMin}
                             onChange={e => setField(vital, "warnMin", e.target.value)} />
                         </label>
                         <label className="threshold-field warning">
                           <span>Max</span>
-                          <input type="number" step="0.1"
+                          <input type="number" step={step}
                             value={vals.warnMax}
                             onChange={e => setField(vital, "warnMax", e.target.value)} />
                         </label>
@@ -310,13 +311,13 @@ export default function Settings() {
                       <div className="tier-fields">
                         <label className="threshold-field danger">
                           <span>Min</span>
-                          <input type="number" step="0.1"
+                          <input type="number" step={step}
                             value={vals.dangerMin}
                             onChange={e => setField(vital, "dangerMin", e.target.value)} />
                         </label>
                         <label className="threshold-field danger">
                           <span>Max</span>
-                          <input type="number" step="0.1"
+                          <input type="number" step={step}
                             value={vals.dangerMax}
                             onChange={e => setField(vital, "dangerMax", e.target.value)} />
                         </label>

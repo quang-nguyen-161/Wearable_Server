@@ -179,6 +179,9 @@ All downlink commands share a common two-byte header before any payload:
 | `0xA0` | `CMD_ACK` | 6 | `[addr_b2][addr_b3][addr_b4][addr_b5][node_id]` — last 4 bytes of BLE MAC + assigned ID |
 | `0xCF` | `CMD_ECG_CFG` | 6 | `[freq_lo][freq_hi][interval_lo][interval_hi]` (2 × uint16 LE) |
 | `0xCE` | `CMD_THR` | 9 | `[ppgHrMin][ppgHrMax][ecgHrMin][ecgHrMax][spo2Min][tempMin][tempMax]` (7 × uint8) |
+| `0xCD` | `CMD_PPG_CFG` | 6 | `[sampleFreqLo][sampleFreqHi][redMa][irMa]` (uint16 LE + 2 × uint8) |
+| `0xCC` | `CMD_VITAL_CFG` | 4 | `[intervalLo][intervalHi]` (uint16 LE, ms) |
+| `0xCE` | `CMD_THR` | **32** | see expanded layout below |
 
 ### CMD_ACK  `0xA0`  — connect acknowledgement
 
@@ -236,42 +239,57 @@ if (data[0] == 0xCF && data[1] == my_node_id) {
 }
 ```
 
-### CMD_THR  `0xCE`  — vital warning thresholds
+### CMD_THR  `0xCE`  — vital thresholds (all 3 tiers)
+
+**32 bytes total** — 3 tiers (normal / warning / dangerous) × 4 vitals × min+max.  
+Temperature is encoded as `uint16 LE × 10` to preserve 0.1 °C resolution.
 
 ```
-[0xCE][node_id][ppgHrMin][ppgHrMax][ecgHrMin][ecgHrMax][spo2Min][tempMin][tempMax]
+[0]   0xCE
+[1]   node_id
+[2]   ppgHr_normalMin   [3]  ppgHr_normalMax    (uint8 bpm)
+[4]   ppgHr_warnMin     [5]  ppgHr_warnMax
+[6]   ppgHr_dangerMin   [7]  ppgHr_dangerMax
+[8]   ecgHr_normalMin   [9]  ecgHr_normalMax    (uint8 bpm)
+[10]  ecgHr_warnMin     [11] ecgHr_warnMax
+[12]  ecgHr_dangerMin   [13] ecgHr_dangerMax
+[14]  spo2_normalMin    [15] spo2_normalMax      (uint8 %)
+[16]  spo2_warnMin      [17] spo2_warnMax
+[18]  spo2_dangerMin    [19] spo2_dangerMax
+[20-21] temp_normalMin  [22-23] temp_normalMax   (uint16 LE ×10, e.g. 361 = 36.1°C)
+[24-25] temp_warnMin    [26-27] temp_warnMax
+[28-29] temp_dangerMin  [30-31] temp_dangerMax
 ```
-
-| Byte | Field | Unit | Example |
-|---|---|---|---|
-| 0 | `0xCE` | — | — |
-| 1 | `node_id` | — | `0x01` |
-| 2 | `ppgHr_warnMin` | bpm | `50` |
-| 3 | `ppgHr_warnMax` | bpm | `120` |
-| 4 | `ecgHr_warnMin` | bpm | `50` |
-| 5 | `ecgHr_warnMax` | bpm | `120` |
-| 6 | `spo2_warnMin` | % | `90` |
-| 7 | `temp_warnMin` | °C | `35` |
-| 8 | `temp_warnMax` | °C | `38` |
-
-All values fit in `uint8_t` (max 255). Temperature in whole °C.
 
 ```python
 # gateway.py — NodeState.build_threshold_payload()
-struct.pack('<9B', CMD_THR, node_id,
-    ppgHr_warnMin, ppgHr_warnMax,
-    ecgHr_warnMin, ecgHr_warnMax,
-    spo2_warnMin,
-    temp_warnMin,  temp_warnMax)
+struct.pack('<BB18B6H',
+    CMD_THR, node_id,
+    ppgHr_normalMin, ppgHr_normalMax, ppgHr_warnMin, ppgHr_warnMax, ppgHr_dangerMin, ppgHr_dangerMax,
+    ecgHr_normalMin, ecgHr_normalMax, ecgHr_warnMin, ecgHr_warnMax, ecgHr_dangerMin, ecgHr_dangerMax,
+    spo2_normalMin,  spo2_normalMax,  spo2_warnMin,  spo2_warnMax,  spo2_dangerMin,  spo2_dangerMax,
+    temp_normalMin,  temp_normalMax,  temp_warnMin,  temp_warnMax,  temp_dangerMin,  temp_dangerMax,
+    # temp values stored ×10: 36.1°C → 361
+)
 ```
 ```c
-// nRF52832 RX handler
+// nRF52832 RX handler (cmd.c)
 if (data[0] == 0xCE && data[1] == my_node_id) {
-    uint8_t ppg_hr_min = data[2];  uint8_t ppg_hr_max = data[3];
-    uint8_t ecg_hr_min = data[4];  uint8_t ecg_hr_max = data[5];
-    uint8_t spo2_min   = data[6];
-    uint8_t temp_min   = data[7];  uint8_t temp_max   = data[8];
-    // update alert thresholds
+    g_thr_ppg_norm_min = data[2];  g_thr_ppg_norm_max = data[3];
+    g_thr_ppg_warn_min = data[4];  g_thr_ppg_warn_max = data[5];
+    g_thr_ppg_dang_min = data[6];  g_thr_ppg_dang_max = data[7];
+    g_thr_ecg_norm_min = data[8];  g_thr_ecg_norm_max = data[9];
+    g_thr_ecg_warn_min = data[10]; g_thr_ecg_warn_max = data[11];
+    g_thr_ecg_dang_min = data[12]; g_thr_ecg_dang_max = data[13];
+    g_thr_spo2_norm_min= data[14]; g_thr_spo2_norm_max= data[15];
+    g_thr_spo2_warn_min= data[16]; g_thr_spo2_warn_max= data[17];
+    g_thr_spo2_dang_min= data[18]; g_thr_spo2_dang_max= data[19];
+    g_thr_temp_norm_min= (uint16_t)(data[20] | (data[21]<<8));
+    g_thr_temp_norm_max= (uint16_t)(data[22] | (data[23]<<8));
+    g_thr_temp_warn_min= (uint16_t)(data[24] | (data[25]<<8));
+    g_thr_temp_warn_max= (uint16_t)(data[26] | (data[27]<<8));
+    g_thr_temp_dang_min= (uint16_t)(data[28] | (data[29]<<8));
+    g_thr_temp_dang_max= (uint16_t)(data[30] | (data[31]<<8));
 }
 ```
 
@@ -286,7 +304,9 @@ Written directly to the RX characteristic (`6e401402-b5a3-f393-e0a9-e50e24dcca9e
 |---|---|---|
 | `CMD_ACK (0xA0)` | 6 | `[0xA0][addr_b2][addr_b3][addr_b4][addr_b5][node_id]` |
 | `CMD_ECG_CFG (0xCF)` | 6 | `[0xCF][node_id][freq_lo][freq_hi][interval_lo][interval_hi]` |
-| `CMD_THR (0xCE)` | 9 | `[0xCE][node_id][ppgHrMin][ppgHrMax][ecgHrMin][ecgHrMax][spo2Min][tempMin][tempMax]` |
+| `CMD_THR (0xCE)` | 32 | `[0xCE][node_id][18×uint8 PPG/ECG/SpO2 norm/warn/dang min+max][6×uint16LE temp×10]` |
+| `CMD_PPG_CFG (0xCD)` | 6 | `[0xCD][node_id][sampleFreqLo][sampleFreqHi][redMa][irMa]` |
+| `CMD_VITAL_CFG (0xCC)` | 4 | `[0xCC][node_id][intervalLo][intervalHi]` |
 
 `addr_b2..b5` = bytes at index 2–5 of the node's 6-byte BLE MAC address.  
 The nRF52832 peripheral verifies `addr_b2..b5` against its own MAC before accepting `node_id`.
@@ -324,36 +344,72 @@ The DATA bytes are **identical** to the raw BLE write payloads in section 7 — 
 
 ## 9. ThingsBoard shared attributes  (SHARED_SCOPE per node)
 
-Written by the dashboard (`pages/settings.js`). Read by both gateways to configure the device.
+Written by the dashboard (`pages/settings.js`). Read by gateways and the dashboard to configure the device.
 
-| Key | Type | Default | Description | Forwarded as |
+The complete uplink payload (all keys saved on every settings save):
+
+```json
+{
+  "vitalInterval": 1000,
+  "ecgSampleFreq": 250, "ecgPacketInterval": 500,
+  "ppgSampleFreq": 100, "ppgRedLedMa": 6, "ppgIrLedMa": 6,
+  "ppgHr_normalMin": 60,  "ppgHr_normalMax": 100,
+  "ppgHr_warnMin":   50,  "ppgHr_warnMax":  120,
+  "ppgHr_dangerMin": 40,  "ppgHr_dangerMax": 130,
+  "ecgHr_normalMin": 60,  "ecgHr_normalMax": 100,
+  "ecgHr_warnMin":   50,  "ecgHr_warnMax":  120,
+  "ecgHr_dangerMin": 40,  "ecgHr_dangerMax": 130,
+  "spo2_normalMin":  95,  "spo2_normalMax":  100,
+  "spo2_warnMin":    90,  "spo2_warnMax":    100,
+  "spo2_dangerMin":  88,  "spo2_dangerMax":  100,
+  "temp_normalMin":  36.1,"temp_normalMax":  37.2,
+  "temp_warnMin":    35.5,"temp_warnMax":    38.5,
+  "temp_dangerMin":  35.0,"temp_dangerMax":  39.5
+}
+```
+
+### Key reference
+
+| Key | Default | Description | gateway.py | main.cpp |
 |---|---|---|---|---|
-| `bleAddress` | string | from `.env.local` | nRF52832 BLE MAC address | triggers reconnect |
-| `ecgSampleFreq` | integer | `250` | ECG ADC sample rate (Hz) | `CMD_ECG_CFG` |
-| `ecgPacketInterval` | integer | `200` | BLE notify interval (ms) | `CMD_ECG_CFG` |
-| `ppgHr_warnMin` | integer | `50` | PPG HR warning lower bound (bpm) | `CMD_THR` byte 2 |
-| `ppgHr_warnMax` | integer | `120` | PPG HR warning upper bound (bpm) | `CMD_THR` byte 3 |
-| `ecgHr_warnMin` | integer | `50` | ECG HR warning lower bound (bpm) | `CMD_THR` byte 4 |
-| `ecgHr_warnMax` | integer | `120` | ECG HR warning upper bound (bpm) | `CMD_THR` byte 5 |
-| `spo2_warnMin` | integer | `90` | SpO₂ warning lower bound (%) | `CMD_THR` byte 6 |
-| `temp_warnMin` | integer | `35` | Temperature warning lower bound (°C) | `CMD_THR` byte 7 |
-| `temp_warnMax` | integer | `38` | Temperature warning upper bound (°C) | `CMD_THR` byte 8 |
+| `bleAddress` | from `.env.local` | nRF52832 BLE MAC | reconnect | — |
+| `vitalInterval` | `1000` ms | How often the node reports vitals | — | configures timer |
+| `ecgSampleFreq` | `250` Hz | ADC sampling rate | — | `CMD_ECG_CFG` |
+| `ecgPacketInterval` | `500` ms | BLE notify interval | — | `CMD_ECG_CFG` |
+| `ppgSampleFreq` | `100` Hz | MAX30102 sample rate | — | configures sensor |
+| `ppgRedLedMa` | `6` mA | Red LED drive current | — | configures sensor |
+| `ppgIrLedMa` | `6` mA | IR LED drive current | — | configures sensor |
+| `ppgHr_normalMin/Max` | 60 / 100 bpm | PPG HR normal band | `CMD_THR` bytes 2–3 | `CMD_THR` |
+| `ppgHr_warnMin/Max` | 50 / 120 bpm | PPG HR warning band | `CMD_THR` bytes 4–5 | `CMD_THR` |
+| `ppgHr_dangerMin/Max` | 40 / 130 bpm | PPG HR danger band | `CMD_THR` bytes 6–7 | `CMD_THR` |
+| `ecgHr_normalMin/Max` | 60 / 100 bpm | ECG HR normal band | `CMD_THR` bytes 8–9 | `CMD_THR` |
+| `ecgHr_warnMin/Max` | 50 / 120 bpm | ECG HR warning band | `CMD_THR` bytes 10–11 | `CMD_THR` |
+| `ecgHr_dangerMin/Max` | 40 / 130 bpm | ECG HR danger band | `CMD_THR` bytes 12–13 | `CMD_THR` |
+| `spo2_normalMin/Max` | 95 / 100 % | SpO₂ normal band | `CMD_THR` bytes 14–15 | `CMD_THR` |
+| `spo2_warnMin/Max` | 90 / 100 % | SpO₂ warning band | `CMD_THR` bytes 16–17 | `CMD_THR` |
+| `spo2_dangerMin/Max` | 88 / 100 % | SpO₂ danger band | `CMD_THR` bytes 18–19 | `CMD_THR` |
+| `temp_normalMin/Max` | 36.1 / 37.2 °C | Temp normal band (→ ×10: 361/372) | `CMD_THR` bytes 20–23 | `CMD_THR` |
+| `temp_warnMin/Max` | 35.5 / 38.5 °C | Temp warning band (→ ×10: 355/385) | `CMD_THR` bytes 24–27 | `CMD_THR` |
+| `temp_dangerMin/Max` | 35.0 / 39.5 °C | Temp danger band (→ ×10: 350/395) | `CMD_THR` bytes 28–31 | `CMD_THR` |
+
+> All 24 threshold keys are forwarded by `gateway.py` via a single `CMD_THR` write on every push.  
+> Temperature is stored in TB as float (°C) and packed as `uint16 LE × 10` in the BLE frame — `round(v * 10)` in the gateway, divide by 10 in firmware.
 
 ### How gateway.py receives attribute changes
 
-On MQTT connect, `gateway.py` requests all shared keys for every node:
+On MQTT connect:
+1. Sends `v1/gateway/connect` for each node so TB routes attribute pushes to this gateway.
+2. Requests current values for `bleAddress` + 7 warn threshold keys:
 ```python
-# publishes to v1/gateway/attributes/request for each key
 {"id": <req_id>, "device": "Node1", "client": false, "key": "ppgHr_warnMin"}
 ```
 
-TB pushes live changes to `v1/gateway/attributes`:
+TB pushes live changes whenever the settings page saves to `v1/gateway/attributes`:
 ```json
-{"device": "Node1", "data": {"ppgHr_warnMin": 45, "temp_warnMax": 39}}
+{"device": "Node1", "data": {"ppgHr_warnMin": 45, "temp_warnMax": 39, ...}}
 ```
 
-The `mqtt_on_message` handler routes the update to the correct `NodeState` by device name,
-rebuilds the threshold payload, and enqueues it on that node's `cmd_q` for the BLE worker thread to write.
+`mqtt_on_message` routes the update to the correct `NodeState` by device name, updates in-memory thresholds, and enqueues a `CMD_THR` BLE write. The push always triggers a BLE write (no stale-value suppression).
 
 ### How main.cpp receives attribute changes
 

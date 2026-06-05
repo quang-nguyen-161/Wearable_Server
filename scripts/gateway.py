@@ -73,26 +73,55 @@ ATTR_REQ_TOPIC  = 'v1/gateway/attributes/request'
 ATTR_RESP_TOPIC = 'v1/gateway/attributes/response'
 ATTR_PUSH_TOPIC = 'v1/gateway/attributes'
 
-CMD_ACK     = 0xA0   # gateway→node on connect:  [0xA0][addr_b2..b5][node_id]  6 bytes
-CMD_ECG_CFG = 0xCF   # ECG config:               [0xCF][node_id][fLo][fHi][iLo][iHi]  6 bytes
-CMD_THR     = 0xCE   # vital thresholds:         [0xCE][node_id][7×uint8]              9 bytes
+CMD_ACK       = 0xA0   # gateway->node on connect:  [0xA0][addr_b2..b5][node_id]          6 bytes
+CMD_ECG_CFG   = 0xCF   # ECG config:               [0xCF][node_id][fLo][fHi][iLo][iHi]  6 bytes
+CMD_THR       = 0xCE   # vital thresholds:         [0xCE][node_id][7×uint8]              9 bytes
+CMD_PPG_CFG   = 0xCD   # PPG config:               [0xCD][node_id][fLo][fHi][redMa][irMa] 6 bytes
+CMD_VITAL_CFG = 0xCC   # Vital interval:           [0xCC][node_id][intervalLo][intervalHi] 4 bytes
 
 THRESHOLD_KEYS = [
-    'ppgHr_warnMin', 'ppgHr_warnMax',
-    'ecgHr_warnMin', 'ecgHr_warnMax',
-    'spo2_warnMin',
-    'temp_warnMin',  'temp_warnMax',
+    'ppgHr_normalMin', 'ppgHr_normalMax', 'ppgHr_warnMin', 'ppgHr_warnMax', 'ppgHr_dangerMin', 'ppgHr_dangerMax',
+    'ecgHr_normalMin', 'ecgHr_normalMax', 'ecgHr_warnMin', 'ecgHr_warnMax', 'ecgHr_dangerMin', 'ecgHr_dangerMax',
+    'spo2_normalMin',  'spo2_normalMax',  'spo2_warnMin',  'spo2_warnMax',  'spo2_dangerMin',  'spo2_dangerMax',
+    'temp_normalMin',  'temp_normalMax',  'temp_warnMin',  'temp_warnMax',  'temp_dangerMin',  'temp_dangerMax',
 ]
-ALL_SHARED_KEYS = ['bleAddress'] + THRESHOLD_KEYS
+# Temperature keys are stored ×10 (uint16) to preserve 0.1°C resolution
+TEMP_KEYS = frozenset(k for k in THRESHOLD_KEYS if k.startswith('temp_'))
+ECG_CFG_KEYS   = ['ecgSampleFreq', 'ecgPacketInterval']
+PPG_CFG_KEYS   = ['ppgSampleFreq', 'ppgRedLedMa', 'ppgIrLedMa']
+VITAL_CFG_KEYS = ['vitalInterval']
+ALL_SHARED_KEYS = (['bleAddress'] + THRESHOLD_KEYS
+                   + ECG_CFG_KEYS + PPG_CFG_KEYS + VITAL_CFG_KEYS)
 
 _DEFAULT_THRESHOLDS = {
-    'ppgHr_warnMin': 50,
-    'ppgHr_warnMax': 120,
-    'ecgHr_warnMin': 50,
-    'ecgHr_warnMax': 120,
-    'spo2_warnMin':  90,
-    'temp_warnMin':  35,
-    'temp_warnMax':  38,
+    'ppgHr_normalMin': 60,  'ppgHr_normalMax': 100,
+    'ppgHr_warnMin':   50,  'ppgHr_warnMax':   120,
+    'ppgHr_dangerMin': 40,  'ppgHr_dangerMax': 130,
+    'ecgHr_normalMin': 60,  'ecgHr_normalMax': 100,
+    'ecgHr_warnMin':   50,  'ecgHr_warnMax':   120,
+    'ecgHr_dangerMin': 40,  'ecgHr_dangerMax': 130,
+    'spo2_normalMin':  95,  'spo2_normalMax':  100,
+    'spo2_warnMin':    90,  'spo2_warnMax':    100,
+    'spo2_dangerMin':  88,  'spo2_dangerMax':  100,
+    # stored ×10 to preserve 0.1°C resolution in uint16
+    'temp_normalMin':  361, 'temp_normalMax':  372,
+    'temp_warnMin':    355, 'temp_warnMax':    385,
+    'temp_dangerMin':  350, 'temp_dangerMax':  395,
+}
+
+_DEFAULT_ECG_CFG = {
+    'ecgSampleFreq':     250,
+    'ecgPacketInterval': 500,
+}
+
+_DEFAULT_PPG_CFG = {
+    'ppgSampleFreq': 100,
+    'ppgRedLedMa':   6,
+    'ppgIrLedMa':    6,
+}
+
+_DEFAULT_VITAL_CFG = {
+    'vitalInterval': 1000,
 }
 
 
@@ -110,6 +139,12 @@ class NodeState:
         self.cmd_q        = queue.Queue(maxsize=10)  # outbound BLE write payloads
         self.thresholds   = dict(_DEFAULT_THRESHOLDS)
         self._thr_lock    = threading.Lock()
+        self.ecg_cfg      = dict(_DEFAULT_ECG_CFG)
+        self._ecg_lock    = threading.Lock()
+        self.ppg_cfg      = dict(_DEFAULT_PPG_CFG)
+        self._ppg_lock    = threading.Lock()
+        self.vital_cfg    = dict(_DEFAULT_VITAL_CFG)
+        self._vital_lock  = threading.Lock()
 
     def get_address(self) -> str:
         with self._addr_lock:
@@ -121,7 +156,7 @@ class NodeState:
             return
         with self._addr_lock:
             if addr != self._addr:
-                print(f'[TB]  {self.name}: BLE address {self._addr} → {addr}')
+                print(f'[TB]  {self.name}: BLE address {self._addr} -> {addr}')
                 self._addr = addr
                 self.addr_changed.set()
 
@@ -131,7 +166,7 @@ class NodeState:
             for k, v in updates.items():
                 if k in self.thresholds:
                     try:
-                        new = int(float(v))
+                        new = round(float(v) * 10) if k in TEMP_KEYS else int(float(v))
                         if new != self.thresholds[k]:
                             self.thresholds[k] = new
                             changed = True
@@ -145,16 +180,24 @@ class NodeState:
         return struct.pack('<6B', CMD_ACK, *addr_bytes[2:], self.node_id)
 
     def build_threshold_payload(self) -> bytes | None:
-        """[CMD_THR][node_id][7×uint8] — 9 bytes."""
+        """32 bytes: [CMD_THR][node_id][18×uint8 PPG/ECG/SpO2][6×uint16LE temp×10]"""
         with self._thr_lock:
             t = self.thresholds.copy()
         try:
-            return struct.pack('<9B',
+            return struct.pack('<BB18B6H',
                 CMD_THR, self.node_id,
-                t['ppgHr_warnMin'], t['ppgHr_warnMax'],
-                t['ecgHr_warnMin'], t['ecgHr_warnMax'],
-                t['spo2_warnMin'],
-                t['temp_warnMin'],  t['temp_warnMax'],
+                t['ppgHr_normalMin'], t['ppgHr_normalMax'],
+                t['ppgHr_warnMin'],   t['ppgHr_warnMax'],
+                t['ppgHr_dangerMin'], t['ppgHr_dangerMax'],
+                t['ecgHr_normalMin'], t['ecgHr_normalMax'],
+                t['ecgHr_warnMin'],   t['ecgHr_warnMax'],
+                t['ecgHr_dangerMin'], t['ecgHr_dangerMax'],
+                t['spo2_normalMin'],  t['spo2_normalMax'],
+                t['spo2_warnMin'],    t['spo2_warnMax'],
+                t['spo2_dangerMin'],  t['spo2_dangerMax'],
+                t['temp_normalMin'],  t['temp_normalMax'],
+                t['temp_warnMin'],    t['temp_warnMax'],
+                t['temp_dangerMin'],  t['temp_dangerMax'],
             )
         except Exception as e:
             print(f'[THR] {self.name}: payload build error: {e}')
@@ -166,7 +209,115 @@ class NodeState:
             try:
                 self.cmd_q.put_nowait(p)
             except queue.Full:
-                pass  # BLE thread is busy; it will use current values next write
+                pass
+
+    def update_ecg_cfg(self, updates: dict) -> bool:
+        changed = False
+        with self._ecg_lock:
+            for k, v in updates.items():
+                if k in self.ecg_cfg:
+                    try:
+                        new = int(float(v))
+                        if new != self.ecg_cfg[k]:
+                            self.ecg_cfg[k] = new
+                            changed = True
+                    except (TypeError, ValueError):
+                        pass
+        return changed
+
+    def build_ecg_cfg_payload(self) -> bytes | None:
+        """[CMD_ECG_CFG][node_id][freq_lo][freq_hi][interval_lo][interval_hi] — 6 bytes."""
+        with self._ecg_lock:
+            cfg = self.ecg_cfg.copy()
+        try:
+            return struct.pack('<2B2H',
+                CMD_ECG_CFG, self.node_id,
+                cfg['ecgSampleFreq'],
+                cfg['ecgPacketInterval'],
+            )
+        except Exception as e:
+            print(f'[ECG] {self.name}: payload build error: {e}')
+            return None
+
+    def enqueue_ecg_cfg(self):
+        p = self.build_ecg_cfg_payload()
+        if p:
+            try:
+                self.cmd_q.put_nowait(p)
+            except queue.Full:
+                pass
+
+    def update_ppg_cfg(self, updates: dict) -> bool:
+        changed = False
+        with self._ppg_lock:
+            for k, v in updates.items():
+                if k in self.ppg_cfg:
+                    try:
+                        new = int(float(v))
+                        if new != self.ppg_cfg[k]:
+                            self.ppg_cfg[k] = new
+                            changed = True
+                    except (TypeError, ValueError):
+                        pass
+        return changed
+
+    def build_ppg_cfg_payload(self) -> bytes | None:
+        """[CMD_PPG_CFG][node_id][sampleFreqLo][sampleFreqHi][redMa][irMa] — 6 bytes."""
+        with self._ppg_lock:
+            cfg = self.ppg_cfg.copy()
+        try:
+            return struct.pack('<2BH2B',
+                CMD_PPG_CFG, self.node_id,
+                cfg['ppgSampleFreq'],
+                cfg['ppgRedLedMa'],
+                cfg['ppgIrLedMa'],
+            )
+        except Exception as e:
+            print(f'[PPG] {self.name}: payload build error: {e}')
+            return None
+
+    def enqueue_ppg_cfg(self):
+        p = self.build_ppg_cfg_payload()
+        if p:
+            try:
+                self.cmd_q.put_nowait(p)
+            except queue.Full:
+                pass
+
+    def update_vital_cfg(self, updates: dict) -> bool:
+        changed = False
+        with self._vital_lock:
+            for k, v in updates.items():
+                if k in self.vital_cfg:
+                    try:
+                        new = int(float(v))
+                        if new != self.vital_cfg[k]:
+                            self.vital_cfg[k] = new
+                            changed = True
+                    except (TypeError, ValueError):
+                        pass
+        return changed
+
+    def build_vital_cfg_payload(self) -> bytes | None:
+        """[CMD_VITAL_CFG][node_id][intervalLo][intervalHi] — 4 bytes."""
+        with self._vital_lock:
+            cfg = self.vital_cfg.copy()
+        try:
+            return struct.pack('<2BH',
+                CMD_VITAL_CFG, self.node_id,
+                cfg['vitalInterval'],
+            )
+        except Exception as e:
+            print(f'[VIT] {self.name}: payload build error: {e}')
+            return None
+
+    def enqueue_vital_cfg(self):
+        p = self.build_vital_cfg_payload()
+        if p:
+            try:
+                self.cmd_q.put_nowait(p)
+            except queue.Full:
+                pass
 
 
 def _parse_node_list() -> dict[str, NodeState]:
@@ -203,6 +354,12 @@ _pending_attr_req_node = {}   # req_id -> node name
 nodes: dict[str, NodeState] = {}
 
 
+def _connect_all_devices(client):
+    for node_name in nodes:
+        client.publish('v1/gateway/connect', json.dumps({"device": node_name, "type": "default"}))
+    print(f'[TB]  Announced connect for {len(nodes)} node(s): {list(nodes)}')
+
+
 def _request_all_attrs(client):
     global _attr_req_id
     for node_name in nodes:
@@ -231,17 +388,29 @@ def mqtt_on_message(client, userdata, msg):
             node = nodes.get(node_name)
             if node is None:
                 return
+            print(f'[TB]  {node_name}: attr response {key}={value}')
             if key == 'bleAddress':
                 node.set_address(str(value))
             elif key in THRESHOLD_KEYS:
                 if node.update_thresholds({key: value}):
                     node.enqueue_thresholds()
+            elif key in ECG_CFG_KEYS:
+                if node.update_ecg_cfg({key: value}):
+                    node.enqueue_ecg_cfg()
+            elif key in PPG_CFG_KEYS:
+                if node.update_ppg_cfg({key: value}):
+                    node.enqueue_ppg_cfg()
+            elif key in VITAL_CFG_KEYS:
+                if node.update_vital_cfg({key: value}):
+                    node.enqueue_vital_cfg()
 
         elif topic == ATTR_PUSH_TOPIC:
             # {"device": "Node1", "data": {"bleAddress": "..", "ppgHr_warnMin": 50, ...}}
             node_name = data.get('device')
+            print(f'[TB]  attr push for device={node_name!r}: {data}')
             node = nodes.get(node_name)
             if node is None:
+                print(f'[TB]  attr push: unknown device {node_name!r} — known: {list(nodes)}')
                 return
             updates = data.get('data', {})
 
@@ -249,9 +418,28 @@ def mqtt_on_message(client, userdata, msg):
                 node.set_address(str(updates['bleAddress']))
 
             thr_updates = {k: v for k, v in updates.items() if k in THRESHOLD_KEYS}
-            if thr_updates and node.update_thresholds(thr_updates):
+            if thr_updates:
+                node.update_thresholds(thr_updates)
                 node.enqueue_thresholds()
-                print(f'[TB]  {node_name}: threshold update queued → BLE write')
+                print(f'[TB]  {node_name}: thresholds pushed {thr_updates} -> BLE write queued')
+
+            ecg_updates = {k: v for k, v in updates.items() if k in ECG_CFG_KEYS}
+            if ecg_updates:
+                node.update_ecg_cfg(ecg_updates)
+                node.enqueue_ecg_cfg()
+                print(f'[TB]  {node_name}: ECG config pushed {ecg_updates} -> BLE write queued')
+
+            ppg_updates = {k: v for k, v in updates.items() if k in PPG_CFG_KEYS}
+            if ppg_updates:
+                node.update_ppg_cfg(ppg_updates)
+                node.enqueue_ppg_cfg()
+                print(f'[TB]  {node_name}: PPG config pushed {ppg_updates} -> BLE write queued')
+
+            vital_updates = {k: v for k, v in updates.items() if k in VITAL_CFG_KEYS}
+            if vital_updates:
+                node.update_vital_cfg(vital_updates)
+                node.enqueue_vital_cfg()
+                print(f'[TB]  {node_name}: vital config pushed {vital_updates} -> BLE write queued')
 
     except Exception as e:
         print(f'[MQTT] Message parse error: {e}')
@@ -263,6 +451,7 @@ def mqtt_on_connect(client, userdata, flags, rc):
         client.subscribe(ATTR_RESP_TOPIC)
         client.subscribe(ATTR_PUSH_TOPIC)
         mqtt_connected.set()
+        _connect_all_devices(client)
         _request_all_attrs(client)
     else:
         print(f'[MQTT] Connection failed rc={rc}')
@@ -385,6 +574,33 @@ def node_worker(node: NodeState, adapter):
                 except Exception as e:
                     print(f'[BLE] {node.name}: initial threshold write error: {e}')
 
+            # 3. Push current ECG config immediately after thresholds
+            p = node.build_ecg_cfg_payload()
+            if p:
+                try:
+                    peripheral.write_request(SERVICE_UUID, RX_CHAR_UUID, p)
+                    print(f'[BLE] {node.name}: initial ECG config sent')
+                except Exception as e:
+                    print(f'[BLE] {node.name}: initial ECG config write error: {e}')
+
+            # 4. Push current PPG config
+            p = node.build_ppg_cfg_payload()
+            if p:
+                try:
+                    peripheral.write_request(SERVICE_UUID, RX_CHAR_UUID, p)
+                    print(f'[BLE] {node.name}: initial PPG config sent')
+                except Exception as e:
+                    print(f'[BLE] {node.name}: initial PPG config write error: {e}')
+
+            # 5. Push current vital interval
+            p = node.build_vital_cfg_payload()
+            if p:
+                try:
+                    peripheral.write_request(SERVICE_UUID, RX_CHAR_UUID, p)
+                    print(f'[BLE] {node.name}: initial vital config sent')
+                except Exception as e:
+                    print(f'[BLE] {node.name}: initial vital config write error: {e}')
+
             while True:
                 time.sleep(2)
 
@@ -393,7 +609,12 @@ def node_worker(node: NodeState, adapter):
                     try:
                         cmd_payload = node.cmd_q.get_nowait()
                         peripheral.write_request(SERVICE_UUID, RX_CHAR_UUID, cmd_payload)
-                        label = 'thresholds' if cmd_payload[0] == CMD_THR else 'config'
+                        label = {
+                            CMD_THR:       'thresholds',
+                            CMD_ECG_CFG:   'ECG config',
+                            CMD_PPG_CFG:   'PPG config',
+                            CMD_VITAL_CFG: 'vital config',
+                        }.get(cmd_payload[0], 'config')
                         print(f'[BLE] {node.name}: {label} written')
                     except queue.Empty:
                         break
@@ -402,7 +623,7 @@ def node_worker(node: NodeState, adapter):
                         break
 
                 if node.addr_changed.is_set():
-                    print(f'[BLE] {node.name}: address changed → reconnecting')
+                    print(f'[BLE] {node.name}: address changed -> reconnecting')
                     break
                 if time.time() - last_rx_ts > NO_DATA_TIMEOUT_S:
                     print(f'[BLE] {node.name}: no data for {NO_DATA_TIMEOUT_S}s — reconnecting')
