@@ -523,7 +523,7 @@ def ble_connect_node(adapter, node: NodeState):
             results = adapter.scan_get_results()
         for p in results:
             if p.address().lower() == target.lower():
-                print(f'[BLE] {node.name}: found [{p.address()}] — connecting')
+                print(f'[BLE] {node.name}: found [{p.address()}] - connecting')
                 p.connect()
                 return p
         print(f'[BLE] {node.name}: not found, retrying...')

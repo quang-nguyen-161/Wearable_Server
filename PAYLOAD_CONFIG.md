@@ -176,12 +176,11 @@ All downlink commands share a common two-byte header before any payload:
 
 | CMD | Name | Total bytes | Payload after `[CMD][NODE_ID]` |
 |---|---|---|---|
-| `0xA0` | `CMD_ACK` | 6 | `[addr_b2][addr_b3][addr_b4][addr_b5][node_id]` — last 4 bytes of BLE MAC + assigned ID |
-| `0xCF` | `CMD_ECG_CFG` | 6 | `[freq_lo][freq_hi][interval_lo][interval_hi]` (2 × uint16 LE) |
-| `0xCE` | `CMD_THR` | 9 | `[ppgHrMin][ppgHrMax][ecgHrMin][ecgHrMax][spo2Min][tempMin][tempMax]` (7 × uint8) |
-| `0xCD` | `CMD_PPG_CFG` | 6 | `[sampleFreqLo][sampleFreqHi][redMa][irMa]` (uint16 LE + 2 × uint8) |
-| `0xCC` | `CMD_VITAL_CFG` | 4 | `[intervalLo][intervalHi]` (uint16 LE, ms) |
-| `0xCE` | `CMD_THR` | **32** | see expanded layout below |
+| `0xA0` | `CMD_ACK`       |  6 | `[addr_b2][addr_b3][addr_b4][addr_b5][node_id]` — last 4 bytes of BLE MAC + assigned ID |
+| `0xCF` | `CMD_ECG_CFG`  |  6 | `[freq_lo][freq_hi][interval_lo][interval_hi]` (2 × uint16 LE) |
+| `0xCE` | `CMD_THR`      | 32 | see expanded layout below |
+| `0xCD` | `CMD_PPG_CFG`  |  6 | `[sampleFreqLo][sampleFreqHi][redMa][irMa]` (uint16 LE + 2 × uint8) |
+| `0xCC` | `CMD_VITAL_CFG`|  4 | `[intervalLo][intervalHi]` (uint16 LE, ms) |
 
 ### CMD_ACK  `0xA0`  — connect acknowledgement
 

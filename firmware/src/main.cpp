@@ -74,13 +74,26 @@ const char* TB_HOST = "103.116.39.179";
 #define TB_KEY_FREQ           "ecgSampleFreq"
 #define TB_KEY_INTERVAL       "ecgPacketInterval"
 #define TB_KEY_BLE_ADDR       "bleAddress"
-#define TB_KEY_PPG_MIN        "ppgHr_warnMin"
-#define TB_KEY_PPG_MAX        "ppgHr_warnMax"
-#define TB_KEY_ECG_MIN        "ecgHr_warnMin"
-#define TB_KEY_ECG_MAX        "ecgHr_warnMax"
-#define TB_KEY_SPO2_MIN       "spo2_warnMin"
-#define TB_KEY_TEMP_MIN       "temp_warnMin"
-#define TB_KEY_TEMP_MAX       "temp_warnMax"
+
+// ── Threshold keys — 24 values matching gateway.py THRESHOLD_KEYS order ──────
+// [0..5]  ppgHr:  normalMin/Max, warnMin/Max, dangerMin/Max
+// [6..11] ecgHr:  normalMin/Max, warnMin/Max, dangerMin/Max
+// [12..17] spo2:  normalMin/Max, warnMin/Max, dangerMin/Max
+// [18..23] temp×10: normalMin/Max, warnMin/Max, dangerMin/Max  (uint16, stored ×10)
+#define THR_COUNT 24
+static const char * const THR_KEYS[THR_COUNT] = {
+    "ppgHr_normalMin","ppgHr_normalMax","ppgHr_warnMin","ppgHr_warnMax","ppgHr_dangerMin","ppgHr_dangerMax",
+    "ecgHr_normalMin","ecgHr_normalMax","ecgHr_warnMin","ecgHr_warnMax","ecgHr_dangerMin","ecgHr_dangerMax",
+    "spo2_normalMin", "spo2_normalMax", "spo2_warnMin", "spo2_warnMax", "spo2_dangerMin", "spo2_dangerMax",
+    "temp_normalMin", "temp_normalMax", "temp_warnMin", "temp_warnMax", "temp_dangerMin", "temp_dangerMax",
+};
+// Indices 18-23 are temp values stored ×10 in ThingsBoard (0.1°C resolution in uint16)
+static const int DEFAULT_THR[THR_COUNT] = {
+     60, 100,  50, 120,  40, 130,   // ppgHr
+     60, 100,  50, 120,  40, 130,   // ecgHr
+     95, 100,  90, 100,  88, 100,   // spo2
+    361, 372, 355, 385, 350, 395,   // temp ×10 (36.1-37.2 normal, 35.5-38.5 warn, 35.0-39.5 danger)
+};
 
 // ── Runtime config ────────────────────────────────────────────────────────────
 
@@ -144,11 +157,8 @@ static unsigned long long nodeBatchTs[MAX_NODES]    = {};
 static bool               nodeVitalReady[MAX_NODES] = {};
 
 static String  nodeBleAddr[MAX_NODES];
-static uint8_t nodePpgHrMin[MAX_NODES], nodePpgHrMax[MAX_NODES];
-static uint8_t nodeEcgHrMin[MAX_NODES], nodeEcgHrMax[MAX_NODES];
-static uint8_t nodeSpo2Min[MAX_NODES];
-static uint8_t nodeTempMin[MAX_NODES],  nodeTempMax[MAX_NODES];
-static uint8_t nodeLastThr[MAX_NODES][7];
+// Per-node threshold values (24 ints, indices 18-23 are temp×10 uint16)
+static int     nodeThrVals[MAX_NODES][THR_COUNT];
 static bool    nodeAckSent[MAX_NODES];
 
 static char payload[PAYLOAD_BUF_SIZE];
@@ -182,6 +192,13 @@ static int jsonInt(const String& json, const String& key, int def = 0) {
   int p = json.indexOf(k);
   if (p < 0) return def;
   return json.substring(p + k.length()).toInt();
+}
+
+static float jsonFloat(const String& json, const String& key, float def = 0.0f) {
+  String k = "\"" + key + "\":";
+  int p = json.indexOf(k);
+  if (p < 0) return def;
+  return json.substring(p + k.length()).toFloat();
 }
 
 // ── NVS ───────────────────────────────────────────────────────────────────────
@@ -453,20 +470,17 @@ static bool resolveNodeToken(const String& name, String& tokenOut) {
   return tokenOut.length() > 0;
 }
 
-// ── Fetch ECG config from TB shared attributes (caller must hold adminMutex) ──
-// Uses the device-access token (same as gateway.py fetch_ecg_settings).
+// ── Fetch ECG config + thresholds from TB shared attributes (caller holds adminMutex) ──
+// Matches gateway.py: ALL_SHARED_KEYS = bleAddress + 24 threshold keys + ECG cfg keys
 
 static bool fetchNodeConfig(const String& token,
-    int& freq, int& interval, String& bleAddr, uint8_t* thr) {
+    int& freq, int& interval, String& bleAddr, int thr[THR_COUNT]) {
   adminClient.setInsecure();
   HTTPClient http;
-  String url = tbUrl("/api/v1/" + token + "/attributes?sharedKeys="
-    TB_KEY_FREQ "," TB_KEY_INTERVAL ","
-    TB_KEY_BLE_ADDR ","
-    TB_KEY_PPG_MIN "," TB_KEY_PPG_MAX ","
-    TB_KEY_ECG_MIN "," TB_KEY_ECG_MAX ","
-    TB_KEY_SPO2_MIN "," TB_KEY_TEMP_MIN "," TB_KEY_TEMP_MAX);
-  http.begin(adminClient, url);
+  // Build sharedKeys query with all 24 threshold keys + ECG config + BLE addr
+  String keys = String(TB_KEY_FREQ) + "," + TB_KEY_INTERVAL + "," + TB_KEY_BLE_ADDR;
+  for (int i = 0; i < THR_COUNT; i++) { keys += ","; keys += THR_KEYS[i]; }
+  http.begin(adminClient, tbUrl("/api/v1/" + token + "/attributes?sharedKeys=" + keys));
   int code = http.GET();
   String body = http.getString();
   http.end();
@@ -474,17 +488,23 @@ static bool fetchNodeConfig(const String& token,
 
   { int v = jsonInt(body, TB_KEY_FREQ);     if (v > 0) freq     = v; }
   { int v = jsonInt(body, TB_KEY_INTERVAL); if (v > 0) interval = v; }
-
   bleAddr = jsonStr(body, TB_KEY_BLE_ADDR);
 
-  auto u8 = [&](const char* k, int def) -> uint8_t {
-    int v = jsonInt(body, k, def);
-    return (uint8_t)constrain(v, 0, 255);
-  };
-  thr[0] = u8(TB_KEY_PPG_MIN,  50);  thr[1] = u8(TB_KEY_PPG_MAX, 120);
-  thr[2] = u8(TB_KEY_ECG_MIN,  50);  thr[3] = u8(TB_KEY_ECG_MAX, 120);
-  thr[4] = u8(TB_KEY_SPO2_MIN, 90);
-  thr[5] = u8(TB_KEY_TEMP_MIN, 35);  thr[6] = u8(TB_KEY_TEMP_MAX, 38);
+  for (int i = 0; i < THR_COUNT; i++) {
+    bool isTemp = (i >= 18);
+    int v;
+    if (isTemp) {
+      // Temp keys are stored ×10 in TB (0.1°C resolution fits uint16).
+      // If the value is already stored as an integer (e.g. 361), jsonInt works.
+      // If stored as a float (36.1), multiply by 10 and round.
+      float fv = jsonFloat(body, THR_KEYS[i], -1.0f);
+      if (fv < 0) { v = DEFAULT_THR[i]; }
+      else         { v = (fv > 100.0f) ? (int)roundf(fv) : (int)roundf(fv * 10.0f); }
+    } else {
+      v = jsonInt(body, THR_KEYS[i], DEFAULT_THR[i]);
+    }
+    thr[i] = v;
+  }
   return true;
 }
 
@@ -522,14 +542,24 @@ static void sendUartConfig(const String& name, int idx, int freq, int interval) 
   Serial.printf("[CFG] -> %s (id=%d): %d Hz, %d ms\n", name.c_str(), idx, freq, interval);
 }
 
-static void sendUartThreshold(const String& name, int idx, const uint8_t* thr) {
-  uint8_t data[9] = {
-    THR_CMD, (uint8_t)idx,
-    thr[0], thr[1], thr[2], thr[3], thr[4], thr[5], thr[6],
-  };
-  _sendUartFrame(PKT_TYPE_THR, name, data, 9);
-  Serial.printf("[THR] -> %s (id=%d): [%d,%d,%d,%d,%d,%d,%d]\n",
-    name.c_str(), idx, thr[0], thr[1], thr[2], thr[3], thr[4], thr[5], thr[6]);
+// Build 32-byte threshold payload matching gateway.py build_threshold_payload:
+//   [0xCE][node_id][18×uint8 PPG/ECG/SpO2][6×uint16LE temp×10]
+static void sendUartThreshold(const String& name, int idx, const int thr[THR_COUNT]) {
+  uint8_t data[32];
+  data[0] = THR_CMD;
+  data[1] = (uint8_t)idx;
+  // Indices 0-17: PPG/ECG/SpO2 thresholds as uint8
+  for (int i = 0; i < 18; i++)
+    data[2 + i] = (uint8_t)constrain(thr[i], 0, 255);
+  // Indices 18-23: temp thresholds as uint16 LE (stored ×10)
+  for (int i = 0; i < 6; i++) {
+    uint16_t v = (uint16_t)constrain(thr[18 + i], 0, 65535);
+    data[20 + i * 2]     = (uint8_t)(v & 0xFF);
+    data[20 + i * 2 + 1] = (uint8_t)(v >> 8);
+  }
+  _sendUartFrame(PKT_TYPE_THR, name, data, 32);
+  Serial.printf("[THR] -> %s (id=%d) ppgWarn=[%d,%d] ecgWarn=[%d,%d] spo2Warn=[%d,%d] tempWarn=[%d,%d]x10\n",
+    name.c_str(), idx, thr[2], thr[3], thr[8], thr[9], thr[14], thr[15], thr[20], thr[21]);
 }
 
 static void sendUartAck(const String& name, int idx, const String& bleAddr) {
@@ -575,9 +605,8 @@ static void configSyncTask(void*) {
       int    freq     = DEFAULT_FREQ_HZ;
       int    interval = DEFAULT_INTERVAL_MS;
       String bleAddr;
-      uint8_t thr[7] = { nodePpgHrMin[i], nodePpgHrMax[i],
-                         nodeEcgHrMin[i], nodeEcgHrMax[i],
-                         nodeSpo2Min[i],  nodeTempMin[i], nodeTempMax[i] };
+      int    thr[THR_COUNT];
+      memcpy(thr, nodeThrVals[i], sizeof(thr));
 
       bool ok = nodeTokens[i].length() > 0
              && fetchNodeConfig(nodeTokens[i], freq, interval, bleAddr, thr);
@@ -592,11 +621,8 @@ static void configSyncTask(void*) {
         sendUartConfig(names[i], i, freq, interval);
       }
 
-      if (memcmp(thr, nodeLastThr[i], 7) != 0) {
-        memcpy(nodeLastThr[i], thr, 7);
-        nodePpgHrMin[i] = thr[0]; nodePpgHrMax[i] = thr[1];
-        nodeEcgHrMin[i] = thr[2]; nodeEcgHrMax[i] = thr[3];
-        nodeSpo2Min[i]  = thr[4]; nodeTempMin[i]  = thr[5]; nodeTempMax[i] = thr[6];
+      if (memcmp(thr, nodeThrVals[i], sizeof(thr)) != 0) {
+        memcpy(nodeThrVals[i], thr, sizeof(thr));
         sendUartThreshold(names[i], i, thr);
       }
 
@@ -797,12 +823,8 @@ void setup() {
   memset(nodeLastFreq,     0, sizeof(nodeLastFreq));
   memset(nodeLastInterval, 0, sizeof(nodeLastInterval));
   memset(nodeAckSent,      0, sizeof(nodeAckSent));
-  for (int i = 0; i < MAX_NODES; i++) {
-    nodePpgHrMin[i] = 50; nodePpgHrMax[i] = 120;
-    nodeEcgHrMin[i] = 50; nodeEcgHrMax[i] = 120;
-    nodeSpo2Min[i]  = 90; nodeTempMin[i]  = 35; nodeTempMax[i] = 38;
-    memset(nodeLastThr[i], 0, sizeof(nodeLastThr[i]));
-  }
+  for (int i = 0; i < MAX_NODES; i++)
+    memcpy(nodeThrVals[i], DEFAULT_THR, sizeof(DEFAULT_THR));
   xTaskCreatePinnedToCore(nodeSyncTask,   "nodeSync", 8192, NULL, 1, NULL, 0);
   xTaskCreatePinnedToCore(configSyncTask, "cfgSync",  8192, NULL, 1, NULL, 0);
 
