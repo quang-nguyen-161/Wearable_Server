@@ -151,8 +151,13 @@ Reads from `.env.local` (same file as section 2) plus two BLE-specific vars:
 # Add to .env.local:
 TB_MQTT_BROKER=mqtt://<SERVER_DIRECT_IP>:1883
 TB_GATEWAY_ACCESS_TOKEN=<GATEWAY_ACCESS_TOKEN>
-TB_NODE_NAME=Node1                    # ThingsBoard device name for this BLE node
-BLE_ADDRESS=e5:39:e6:e4:d1:e8         # nRF52832 MAC address
+
+# Multi-node (preferred): comma-separated "NodeName:BLE_ADDR" pairs
+NODE_LIST=Node1:e5:39:e6:e4:d1:e8,Node2:aa:bb:cc:dd:ee:ff
+
+# Single-node fallback (legacy — used if NODE_LIST is not set):
+TB_NODE_NAME=Node1
+BLE_ADDRESS=e5:39:e6:e4:d1:e8
 ```
 
 Install dependencies:

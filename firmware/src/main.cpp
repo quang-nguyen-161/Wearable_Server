@@ -60,15 +60,27 @@ const char* TB_HOST = "103.116.39.179";
 #define PKT_TYPE_ECG   0x01
 #define PKT_TYPE_VIT   0x02
 #define PKT_TYPE_CFG   0x03      // ESP32 → nRF52832 central: forward config to BLE node
-#define ECG_CFG_CMD    0xCF      // first byte of 5-byte ECG config payload
+#define ECG_CFG_CMD    0xCF      // first byte of CMD_ECG_CFG payload
+#define THR_CMD        0xCE      // first byte of CMD_THR payload
+#define ACK_CMD        0xA0      // first byte of CMD_ACK payload
+#define PKT_TYPE_THR   0x04      // ESP32 → nRF52832: threshold command
+#define PKT_TYPE_ACK   0x05      // ESP32 → nRF52832: connect ACK
 #define PKT_MAX_NAME   15
 #define PKT_MAX_DATA   256
 
 #define DEFAULT_FREQ_HZ       250
 #define DEFAULT_INTERVAL_MS   200
-#define CONFIG_SYNC_MS        3000   // attribute poll interval (matches gateway.py ATTR_POLL_INTERVAL_S)
+#define CONFIG_SYNC_MS        3000
 #define TB_KEY_FREQ           "ecgSampleFreq"
 #define TB_KEY_INTERVAL       "ecgPacketInterval"
+#define TB_KEY_BLE_ADDR       "bleAddress"
+#define TB_KEY_PPG_MIN        "ppgHr_warnMin"
+#define TB_KEY_PPG_MAX        "ppgHr_warnMax"
+#define TB_KEY_ECG_MIN        "ecgHr_warnMin"
+#define TB_KEY_ECG_MAX        "ecgHr_warnMax"
+#define TB_KEY_SPO2_MIN       "spo2_warnMin"
+#define TB_KEY_TEMP_MIN       "temp_warnMin"
+#define TB_KEY_TEMP_MAX       "temp_warnMax"
 
 // ── Runtime config ────────────────────────────────────────────────────────────
 
@@ -131,6 +143,14 @@ static bool               nodeBatchReady[MAX_NODES] = {};
 static unsigned long long nodeBatchTs[MAX_NODES]    = {};
 static bool               nodeVitalReady[MAX_NODES] = {};
 
+static String  nodeBleAddr[MAX_NODES];
+static uint8_t nodePpgHrMin[MAX_NODES], nodePpgHrMax[MAX_NODES];
+static uint8_t nodeEcgHrMin[MAX_NODES], nodeEcgHrMax[MAX_NODES];
+static uint8_t nodeSpo2Min[MAX_NODES];
+static uint8_t nodeTempMin[MAX_NODES],  nodeTempMax[MAX_NODES];
+static uint8_t nodeLastThr[MAX_NODES][7];
+static bool    nodeAckSent[MAX_NODES];
+
 static char payload[PAYLOAD_BUF_SIZE];
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
@@ -155,6 +175,13 @@ static String jsonStr(const String& json, const String& key) {
   s += needle.length();
   int e = json.indexOf("\"", s);
   return e > s ? json.substring(s, e) : "";
+}
+
+static int jsonInt(const String& json, const String& key, int def = 0) {
+  String k = "\"" + key + "\":";
+  int p = json.indexOf(k);
+  if (p < 0) return def;
+  return json.substring(p + k.length()).toInt();
 }
 
 // ── NVS ───────────────────────────────────────────────────────────────────────
@@ -380,8 +407,14 @@ static void syncNodes() {
   for (int i = 0; i < newCount && !changed; i++)
     if (nodeNames[i] != newNames[i]) changed = true;
   if (changed) {
-    // Invalidate cached tokens — indices may have shifted
-    for (int j = 0; j < MAX_NODES; j++) { nodeTokens[j] = ""; nodeLastFreq[j] = 0; nodeLastInterval[j] = 0; }
+    // Invalidate cached state — indices may have shifted
+    for (int j = 0; j < MAX_NODES; j++) {
+      nodeTokens[j]       = "";
+      nodeLastFreq[j]     = 0;
+      nodeLastInterval[j] = 0;
+      nodeAckSent[j]      = false;
+      memset(nodeLastThr[j], 0, sizeof(nodeLastThr[j]));
+    }
     nodeCount = newCount;
     for (int i = 0; i < nodeCount; i++) nodeNames[i] = newNames[i];
   }
@@ -423,57 +456,94 @@ static bool resolveNodeToken(const String& name, String& tokenOut) {
 // ── Fetch ECG config from TB shared attributes (caller must hold adminMutex) ──
 // Uses the device-access token (same as gateway.py fetch_ecg_settings).
 
-static bool fetchNodeConfig(const String& token, int& freq, int& interval) {
+static bool fetchNodeConfig(const String& token,
+    int& freq, int& interval, String& bleAddr, uint8_t* thr) {
   adminClient.setInsecure();
   HTTPClient http;
-  String url = tbUrl("/api/v1/" + token
-    + "/attributes?sharedKeys=" TB_KEY_FREQ "," TB_KEY_INTERVAL);
+  String url = tbUrl("/api/v1/" + token + "/attributes?sharedKeys="
+    TB_KEY_FREQ "," TB_KEY_INTERVAL ","
+    TB_KEY_BLE_ADDR ","
+    TB_KEY_PPG_MIN "," TB_KEY_PPG_MAX ","
+    TB_KEY_ECG_MIN "," TB_KEY_ECG_MAX ","
+    TB_KEY_SPO2_MIN "," TB_KEY_TEMP_MIN "," TB_KEY_TEMP_MAX);
   http.begin(adminClient, url);
   int code = http.GET();
   String body = http.getString();
   http.end();
   if (code != 200) return false;
 
-  // body: {"shared":{"ecgSampleFreq":250,"ecgPacketInterval":200}}
-  String fk = "\"" TB_KEY_FREQ "\":";
-  int fp = body.indexOf(fk);
-  if (fp >= 0) { int v = body.substring(fp + fk.length()).toInt(); if (v > 0) freq = v; }
-  String ik = "\"" TB_KEY_INTERVAL "\":";
-  int ip = body.indexOf(ik);
-  if (ip >= 0) { int v = body.substring(ip + ik.length()).toInt(); if (v > 0) interval = v; }
+  { int v = jsonInt(body, TB_KEY_FREQ);     if (v > 0) freq     = v; }
+  { int v = jsonInt(body, TB_KEY_INTERVAL); if (v > 0) interval = v; }
+
+  bleAddr = jsonStr(body, TB_KEY_BLE_ADDR);
+
+  auto u8 = [&](const char* k, int def) -> uint8_t {
+    int v = jsonInt(body, k, def);
+    return (uint8_t)constrain(v, 0, 255);
+  };
+  thr[0] = u8(TB_KEY_PPG_MIN,  50);  thr[1] = u8(TB_KEY_PPG_MAX, 120);
+  thr[2] = u8(TB_KEY_ECG_MIN,  50);  thr[3] = u8(TB_KEY_ECG_MAX, 120);
+  thr[4] = u8(TB_KEY_SPO2_MIN, 90);
+  thr[5] = u8(TB_KEY_TEMP_MIN, 35);  thr[6] = u8(TB_KEY_TEMP_MAX, 38);
   return true;
 }
 
-// ── Send ECG config via UART to nRF52832 central ─────────────────────────────
-// Frame: [0xAA][0x55][0x03][NAME_LEN][NAME...][0x05][0x00][0xCF][fLo][fHi][iLo][iHi][XOR]
-// nRF52832 central forwards the 5-byte payload to the BLE node's RX characteristic.
+// ── UART command helpers ──────────────────────────────────────────────────────
+// Frame: [0xAA][0x55][TYPE][NAME_LEN][NAME...][LEN_LO][LEN_HI][DATA...][XOR]
+// DATA bytes are identical to the raw BLE write payload (Path A / Path B parity).
 
-static void sendUartConfig(const String& name, int freq, int interval) {
+static void _sendUartFrame(uint8_t type, const String& name,
+                            const uint8_t* data, uint8_t dlen) {
   uint8_t nlen = (uint8_t)min((int)name.length(), PKT_MAX_NAME);
-  const uint8_t DLEN = 5;
-  uint8_t data[DLEN] = {
-    ECG_CFG_CMD,
+  uint8_t xorChk = type;
+  xorChk ^= nlen;
+  for (int i = 0; i < nlen; i++) xorChk ^= (uint8_t)name[i];
+  xorChk ^= (dlen & 0xFF);
+  xorChk ^= ((dlen >> 8) & 0xFF);
+  for (int i = 0; i < dlen; i++) xorChk ^= data[i];
+  Serial2.write((uint8_t)0xAA);
+  Serial2.write((uint8_t)0x55);
+  Serial2.write(type);
+  Serial2.write(nlen);
+  for (int i = 0; i < nlen; i++) Serial2.write((uint8_t)name[i]);
+  Serial2.write((uint8_t)(dlen & 0xFF));
+  Serial2.write((uint8_t)((dlen >> 8) & 0xFF));
+  Serial2.write(data, dlen);
+  Serial2.write(xorChk);
+}
+
+static void sendUartConfig(const String& name, int idx, int freq, int interval) {
+  uint8_t data[6] = {
+    ECG_CFG_CMD, (uint8_t)idx,
     (uint8_t)(freq & 0xFF),     (uint8_t)((freq >> 8) & 0xFF),
     (uint8_t)(interval & 0xFF), (uint8_t)((interval >> 8) & 0xFF),
   };
-  uint8_t xorChk = PKT_TYPE_CFG;
-  xorChk ^= nlen;
-  for (int i = 0; i < nlen; i++) xorChk ^= (uint8_t)name[i];
-  xorChk ^= (DLEN & 0xFF);
-  xorChk ^= ((DLEN >> 8) & 0xFF);
-  for (int i = 0; i < DLEN; i++) xorChk ^= data[i];
+  _sendUartFrame(PKT_TYPE_CFG, name, data, 6);
+  Serial.printf("[CFG] -> %s (id=%d): %d Hz, %d ms\n", name.c_str(), idx, freq, interval);
+}
 
-  Serial2.write((uint8_t)0xAA);
-  Serial2.write((uint8_t)0x55);
-  Serial2.write(PKT_TYPE_CFG);
-  Serial2.write(nlen);
-  for (int i = 0; i < nlen; i++) Serial2.write((uint8_t)name[i]);
-  Serial2.write((uint8_t)(DLEN & 0xFF));
-  Serial2.write((uint8_t)((DLEN >> 8) & 0xFF));
-  Serial2.write(data, DLEN);
-  Serial2.write(xorChk);
+static void sendUartThreshold(const String& name, int idx, const uint8_t* thr) {
+  uint8_t data[9] = {
+    THR_CMD, (uint8_t)idx,
+    thr[0], thr[1], thr[2], thr[3], thr[4], thr[5], thr[6],
+  };
+  _sendUartFrame(PKT_TYPE_THR, name, data, 9);
+  Serial.printf("[THR] -> %s (id=%d): [%d,%d,%d,%d,%d,%d,%d]\n",
+    name.c_str(), idx, thr[0], thr[1], thr[2], thr[3], thr[4], thr[5], thr[6]);
+}
 
-  Serial.printf("[CFG] -> %s: %d Hz, %d ms\n", name.c_str(), freq, interval);
+static void sendUartAck(const String& name, int idx, const String& bleAddr) {
+  uint8_t ab[6] = {};
+  int n = 0, pos = 0;
+  while (n < 6 && pos < (int)bleAddr.length()) {
+    int c = bleAddr.indexOf(':', pos);
+    int end = (c < 0) ? (int)bleAddr.length() : c;
+    ab[n++] = (uint8_t)strtol(bleAddr.substring(pos, end).c_str(), nullptr, 16);
+    pos = (c < 0) ? (int)bleAddr.length() : c + 1;
+  }
+  uint8_t data[6] = { ACK_CMD, ab[2], ab[3], ab[4], ab[5], (uint8_t)idx };
+  _sendUartFrame(PKT_TYPE_ACK, name, data, 6);
+  Serial.printf("[ACK] -> %s (id=%d)\n", name.c_str(), idx);
 }
 
 // ── ECG config sync task — mirrors gateway.py ecg_attr_update_worker ─────────
@@ -502,19 +572,39 @@ static void configSyncTask(void*) {
         }
       }
 
-      int freq     = DEFAULT_FREQ_HZ;
-      int interval = DEFAULT_INTERVAL_MS;
+      int    freq     = DEFAULT_FREQ_HZ;
+      int    interval = DEFAULT_INTERVAL_MS;
+      String bleAddr;
+      uint8_t thr[7] = { nodePpgHrMin[i], nodePpgHrMax[i],
+                         nodeEcgHrMin[i], nodeEcgHrMax[i],
+                         nodeSpo2Min[i],  nodeTempMin[i], nodeTempMax[i] };
+
       bool ok = nodeTokens[i].length() > 0
-             && fetchNodeConfig(nodeTokens[i], freq, interval);
+             && fetchNodeConfig(nodeTokens[i], freq, interval, bleAddr, thr);
 
       xSemaphoreGive(adminMutex);
       if (!ok) continue;
-      if (freq == nodeLastFreq[i] && interval == nodeLastInterval[i]) continue;
 
-      nodeLastFreq[i]     = freq;
-      nodeLastInterval[i] = interval;
-      Serial.printf("[TB] %s config: %d Hz, %d ms\n", names[i].c_str(), freq, interval);
-      sendUartConfig(names[i], freq, interval);
+      if (freq != nodeLastFreq[i] || interval != nodeLastInterval[i]) {
+        nodeLastFreq[i]     = freq;
+        nodeLastInterval[i] = interval;
+        Serial.printf("[TB] %s config: %d Hz, %d ms\n", names[i].c_str(), freq, interval);
+        sendUartConfig(names[i], i, freq, interval);
+      }
+
+      if (memcmp(thr, nodeLastThr[i], 7) != 0) {
+        memcpy(nodeLastThr[i], thr, 7);
+        nodePpgHrMin[i] = thr[0]; nodePpgHrMax[i] = thr[1];
+        nodeEcgHrMin[i] = thr[2]; nodeEcgHrMax[i] = thr[3];
+        nodeSpo2Min[i]  = thr[4]; nodeTempMin[i]  = thr[5]; nodeTempMax[i] = thr[6];
+        sendUartThreshold(names[i], i, thr);
+      }
+
+      if (bleAddr.length() > 0 && (!nodeAckSent[i] || bleAddr != nodeBleAddr[i])) {
+        nodeBleAddr[i] = bleAddr;
+        nodeAckSent[i] = true;
+        sendUartAck(names[i], i, bleAddr);
+      }
     }
   }
 }
@@ -646,7 +736,7 @@ static void readUart() {
 }
 
 // ── Publish one ECG batch ─────────────────────────────────────────────────────
-// Format: {"NodeName":[{"ts":epochMs,"values":{"ecg_batch":"[v0,v1,...]"}}]}
+// Format: {"NodeName":[{"ts":epochMs,"values":{"ecg_batch":"[v0,v1,...]","node_id":N}}]}
 
 static void publishEcgBatch(int idx, const String& name, unsigned long long ts) {
   if (!mqttConnect()) return;
@@ -660,7 +750,7 @@ static void publishEcgBatch(int idx, const String& name, unsigned long long ts) 
     if (i > 0) payload[pos++] = ',';
     pos += snprintf(payload + pos, PAYLOAD_BUF_SIZE - pos, "%d", nodeBatch[idx][i]);
   }
-  pos += snprintf(payload + pos, PAYLOAD_BUF_SIZE - pos, "]\"}}]}");
+  pos += snprintf(payload + pos, PAYLOAD_BUF_SIZE - pos, "]\",\"node_id\":%d}}]}", idx);
   bool ok = mqttClient.publish("v1/gateway/telemetry", (uint8_t*)payload, pos);
   Serial.printf("[%s] ECG %s %d bytes\n", name.c_str(), ok ? "OK" : "FAIL", pos);
 }
@@ -676,8 +766,8 @@ static void publishVitalPacket(int idx, const String& name) {
     pos += snprintf(payload + pos, PAYLOAD_BUF_SIZE - pos, "\"ts\":%llu,", ts);
   pos += snprintf(payload + pos, PAYLOAD_BUF_SIZE - pos,
     "\"values\":{\"ecgHeartRate\":%.1f,\"ppgHeartRate\":%.1f,"
-    "\"spo2\":%.1f,\"temperature\":%.1f}}]}",
-    nodeHr[idx], nodePpgHr[idx], nodeSpo2[idx], nodeTemp[idx]);
+    "\"spo2\":%.1f,\"temperature\":%.1f,\"node_id\":%d}}]}",
+    nodeHr[idx], nodePpgHr[idx], nodeSpo2[idx], nodeTemp[idx], idx);
   bool ok = mqttClient.publish("v1/gateway/telemetry", (uint8_t*)payload, pos);
   Serial.printf("[%s] vitals ECG-HR:%.1f PPG-HR:%.1f SpO2:%.1f %s\n",
     name.c_str(), nodeHr[idx], nodePpgHr[idx], nodeSpo2[idx], ok ? "OK" : "FAIL");
@@ -706,6 +796,13 @@ void setup() {
   adminMutex = xSemaphoreCreateMutex();
   memset(nodeLastFreq,     0, sizeof(nodeLastFreq));
   memset(nodeLastInterval, 0, sizeof(nodeLastInterval));
+  memset(nodeAckSent,      0, sizeof(nodeAckSent));
+  for (int i = 0; i < MAX_NODES; i++) {
+    nodePpgHrMin[i] = 50; nodePpgHrMax[i] = 120;
+    nodeEcgHrMin[i] = 50; nodeEcgHrMax[i] = 120;
+    nodeSpo2Min[i]  = 90; nodeTempMin[i]  = 35; nodeTempMax[i] = 38;
+    memset(nodeLastThr[i], 0, sizeof(nodeLastThr[i]));
+  }
   xTaskCreatePinnedToCore(nodeSyncTask,   "nodeSync", 8192, NULL, 1, NULL, 0);
   xTaskCreatePinnedToCore(configSyncTask, "cfgSync",  8192, NULL, 1, NULL, 0);
 

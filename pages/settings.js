@@ -1,12 +1,13 @@
 // pages/settings.js
-// Per-node settings page.
-// - Vital thresholds    → saved as SERVER_SCOPE attributes on the selected node device
-// - vitalInterval       → saved as SHARED_SCOPE (firmware: how often vitals are reported)
-// - ecgSampleFreq       → saved as SHARED_SCOPE (firmware: ADC sampling rate in Hz)
-// - ecgPacketInterval   → saved as SHARED_SCOPE (firmware: ECG packet send interval in ms)
-// - ppgSampleFreq       → saved as SHARED_SCOPE (firmware: MAX30102 sample rate in Hz)
-// - ppgRedLedMa         → saved as SHARED_SCOPE (firmware: red LED drive current in mA)
-// - ppgIrLedMa          → saved as SHARED_SCOPE (firmware: IR LED drive current in mA)
+// Per-node settings page. All attributes are saved as SHARED_SCOPE so both
+// the dashboard and the gateway/firmware can read them.
+// - Vital thresholds    → SHARED_SCOPE (dashboard: color-code vitals; gateway: push warn thresholds to firmware)
+// - vitalInterval       → SHARED_SCOPE (firmware: how often vitals are reported)
+// - ecgSampleFreq       → SHARED_SCOPE (firmware: ADC sampling rate in Hz)
+// - ecgPacketInterval   → SHARED_SCOPE (firmware: ECG packet send interval in ms)
+// - ppgSampleFreq       → SHARED_SCOPE (firmware: MAX30102 sample rate in Hz)
+// - ppgRedLedMa         → SHARED_SCOPE (firmware: red LED drive current in mA)
+// - ppgIrLedMa          → SHARED_SCOPE (firmware: IR LED drive current in mA)
 
 import { useState, useEffect, useCallback } from "react";
 import { useRouter } from "next/router";
@@ -144,39 +145,39 @@ export default function Settings() {
     setSaving(true);
     setSaveMsg(null);
 
-    // Flatten thresholds into TB attribute keys
-    const serverAttrs = {
-      ppgHr_normalMin: thresholds.ppgHeartRate.normalMin,
-      ppgHr_normalMax: thresholds.ppgHeartRate.normalMax,
-      ppgHr_warnMin:   thresholds.ppgHeartRate.warnMin,
-      ppgHr_warnMax:   thresholds.ppgHeartRate.warnMax,
-      ppgHr_dangerMin: thresholds.ppgHeartRate.dangerMin,
-      ppgHr_dangerMax: thresholds.ppgHeartRate.dangerMax,
-      ecgHr_normalMin: thresholds.ecgHeartRate.normalMin,
-      ecgHr_normalMax: thresholds.ecgHeartRate.normalMax,
-      ecgHr_warnMin:   thresholds.ecgHeartRate.warnMin,
-      ecgHr_warnMax:   thresholds.ecgHeartRate.warnMax,
-      ecgHr_dangerMin: thresholds.ecgHeartRate.dangerMin,
-      ecgHr_dangerMax: thresholds.ecgHeartRate.dangerMax,
-      spo2_normalMin:  thresholds.spo2.normalMin,
-      spo2_normalMax:  thresholds.spo2.normalMax,
-      spo2_warnMin:    thresholds.spo2.warnMin,
-      spo2_warnMax:    thresholds.spo2.warnMax,
-      spo2_dangerMin:  thresholds.spo2.dangerMin,
-      spo2_dangerMax:  thresholds.spo2.dangerMax,
-      temp_normalMin:  thresholds.temperature.normalMin,
-      temp_normalMax:  thresholds.temperature.normalMax,
-      temp_warnMin:    thresholds.temperature.warnMin,
-      temp_warnMax:    thresholds.temperature.warnMax,
-      temp_dangerMin:  thresholds.temperature.dangerMin,
-      temp_dangerMax:  thresholds.temperature.dangerMax,
-    };
-
     try {
-      await Promise.all([
-        saveDeviceAttributes(token, selectedDeviceId, "SERVER_SCOPE", serverAttrs),
-        saveDeviceAttributes(token, selectedDeviceId, "SHARED_SCOPE", { vitalInterval, ecgSampleFreq, ecgPacketInterval, ppgSampleFreq, ppgRedLedMa, ppgIrLedMa }),
-      ]);
+      // All thresholds go to SHARED_SCOPE:
+      //   - gateway reads warn keys to push CMD_THR to firmware
+      //   - dashboard reads all keys for color-coding vitals
+      const sharedAttrs = {
+        vitalInterval, ecgSampleFreq, ecgPacketInterval,
+        ppgSampleFreq, ppgRedLedMa, ppgIrLedMa,
+        ppgHr_normalMin: thresholds.ppgHeartRate.normalMin,
+        ppgHr_normalMax: thresholds.ppgHeartRate.normalMax,
+        ppgHr_warnMin:   thresholds.ppgHeartRate.warnMin,
+        ppgHr_warnMax:   thresholds.ppgHeartRate.warnMax,
+        ppgHr_dangerMin: thresholds.ppgHeartRate.dangerMin,
+        ppgHr_dangerMax: thresholds.ppgHeartRate.dangerMax,
+        ecgHr_normalMin: thresholds.ecgHeartRate.normalMin,
+        ecgHr_normalMax: thresholds.ecgHeartRate.normalMax,
+        ecgHr_warnMin:   thresholds.ecgHeartRate.warnMin,
+        ecgHr_warnMax:   thresholds.ecgHeartRate.warnMax,
+        ecgHr_dangerMin: thresholds.ecgHeartRate.dangerMin,
+        ecgHr_dangerMax: thresholds.ecgHeartRate.dangerMax,
+        spo2_normalMin:  thresholds.spo2.normalMin,
+        spo2_normalMax:  thresholds.spo2.normalMax,
+        spo2_warnMin:    thresholds.spo2.warnMin,
+        spo2_warnMax:    thresholds.spo2.warnMax,
+        spo2_dangerMin:  thresholds.spo2.dangerMin,
+        spo2_dangerMax:  thresholds.spo2.dangerMax,
+        temp_normalMin:  thresholds.temperature.normalMin,
+        temp_normalMax:  thresholds.temperature.normalMax,
+        temp_warnMin:    thresholds.temperature.warnMin,
+        temp_warnMax:    thresholds.temperature.warnMax,
+        temp_dangerMin:  thresholds.temperature.dangerMin,
+        temp_dangerMax:  thresholds.temperature.dangerMax,
+      };
+      await saveDeviceAttributes(token, selectedDeviceId, "SHARED_SCOPE", sharedAttrs);
       updateSettings({ vitalInterval, ecgSampleFreq, ecgPacketInterval, ppgSampleFreq, ppgRedLedMa, ppgIrLedMa, thresholds });
 
       setSaveMsg({ type: "ok", text: "Settings saved to ThingsBoard ✓" });
@@ -258,7 +259,7 @@ export default function Settings() {
           <section className="settings-section">
             <div className="section-title">VITAL THRESHOLDS</div>
             <div className="section-sub">
-              Saved as Server attributes on this node in ThingsBoard. Used by the dashboard to color-code vitals.
+              Saved as Shared attributes on this node in ThingsBoard. Dashboard uses all tiers for color-coding; gateway forwards warn thresholds to firmware.
             </div>
 
             {Object.entries(thresholds).map(([vital, vals]) => {
