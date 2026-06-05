@@ -1,17 +1,23 @@
 // ── HealthMonitor ESP32 Firmware ─────────────────────────────────────────────
-// Event-driven: esp_timer samples ADC at 250Hz into a working buffer.
-// When a batch is complete it sets batchReady; loop() publishes it via MQTT.
+// Receives framed binary packets from an nRF52832 BLE central over UART,
+// then forwards ECG batch + vitals to ThingsBoard via MQTT gateway API.
+//
+// Architecture: (BLE nodes) ──BLE──> nRF52832 ──UART──> ESP32 ──WiFi──> ThingsBoard
+//
+// UART protocol (RX=16, TX=17, 115200 baud):
+//   [0xAA][0x55][TYPE][NAME_LEN][NAME...][LEN_LO][LEN_HI][DATA...][XOR_CHK]
+//   TYPE 0x01 = ECG:    50 × int16_t LE (100 bytes)
+//   TYPE 0x02 = Vitals: ecgHr, ppgHr, spo2, temp (4 × float LE = 16 bytes)
 //
 // First boot — captive portal (AP "HealthMonitor-Setup"):
-//   Enter WiFi SSID/pass + ThingsBoard admin email/password.
-//   After saving the device restarts, connects, and auto-discovers nodes.
+//   Enter WiFi SSID/pass + ThingsBoard admin credentials.
+//   After saving the device restarts and connects.
 //
-// Node discovery (every 10s):
-//   Fetches all TB devices whose name contains "node" (case-insensitive).
-//   TB gateway API auto-creates leaf devices on first publish.
-//
-// Telemetry: MQTT gateway API (v1/gateway/telemetry, port 1883).
-// Admin API (node discovery): HTTPS via WiFiClientSecure → c7.hust-2slab.org (Cloudflare).
+// Node discovery (every 10s via HTTPS) + auto-registration from UART packets.
+// ECG config sync (every 3s): polls ecgSampleFreq/ecgPacketInterval from TB shared
+//   attributes per node; sends PKT_TYPE_CFG(0x03) via UART when values change.
+//   nRF52832 central forwards the 5-byte config payload to the BLE node's RX char.
+// TB gateway API auto-creates leaf devices on first publish.
 // ─────────────────────────────────────────────────────────────────────────────
 
 #include <Arduino.h>
@@ -24,12 +30,10 @@
 #include <DNSServer.h>
 #include <Preferences.h>
 #include <PubSubClient.h>
-#include <esp_timer.h>
 #include <WiFiClientSecure.h>
 #include <freertos/task.h>
 #include <freertos/semphr.h>
 #include <time.h>
-#include <math.h>
 
 // ── Compile-time constants ────────────────────────────────────────────────────
 
@@ -39,14 +43,32 @@ const char* TB_HOST = "103.116.39.179";
 #define TB_GATEWAY_TOKEN      "4o51ajerynq34mtosc26"
 #define MQTT_BUF_SIZE         2048
 
-#define SAMPLE_RATE_HZ        250
-#define SAMPLE_INTERVAL_US    (1000000 / SAMPLE_RATE_HZ)
-#define SAMPLE_INTERVAL_MS    (1000 / SAMPLE_RATE_HZ)
-#define BATCH_SIZE            50      // 50 samples × 4ms = 200ms per batch
-#define VITAL_INTERVAL_MS     5000
+#define BATCH_SIZE            50      // int16_t samples per ECG packet
 #define NODE_SYNC_INTERVAL_MS 10000
 #define PAYLOAD_BUF_SIZE      4096
 #define MAX_NODES             16
+
+// ── UART framing (ESP32 ← nRF52832 central) ──────────────────────────────────
+// Packet: [0xAA][0x55][TYPE][NAME_LEN][NAME...][LEN_LO][LEN_HI][DATA...][XOR_CHK]
+// XOR_CHK = XOR of all bytes from TYPE through the last DATA byte
+// TYPE 0x01 = ECG:    DATA = BATCH_SIZE × int16_t LE  (100 bytes)
+// TYPE 0x02 = Vitals: DATA = ecgHr, ppgHr, spo2, temp (4 × float LE = 16 bytes)
+
+#define UART_RX_PIN    16
+#define UART_TX_PIN    17
+#define UART_BAUD      115200
+#define PKT_TYPE_ECG   0x01
+#define PKT_TYPE_VIT   0x02
+#define PKT_TYPE_CFG   0x03      // ESP32 → nRF52832 central: forward config to BLE node
+#define ECG_CFG_CMD    0xCF      // first byte of 5-byte ECG config payload
+#define PKT_MAX_NAME   15
+#define PKT_MAX_DATA   256
+
+#define DEFAULT_FREQ_HZ       250
+#define DEFAULT_INTERVAL_MS   200
+#define CONFIG_SYNC_MS        3000   // attribute poll interval (matches gateway.py ATTR_POLL_INTERVAL_S)
+#define TB_KEY_FREQ           "ecgSampleFreq"
+#define TB_KEY_INTERVAL       "ecgPacketInterval"
 
 // ── Runtime config ────────────────────────────────────────────────────────────
 
@@ -60,27 +82,19 @@ static char tbAdminPass[64] = "";
 static String            nodeNames[MAX_NODES];
 static int               nodeCount = 0;
 static SemaphoreHandle_t nodeMutex;
+static SemaphoreHandle_t adminMutex;    // serialises all adminClient HTTPS calls
 
-// Per-node vital state — lazy-initialised on first publishVitals call.
-// Default bases match test-direct-stream.js (Node1, Node4, Node6 order).
-static float nodeHr[MAX_NODES]   = {};
-static float nodeSpo2[MAX_NODES] = {};
-static float nodeTemp[MAX_NODES] = {};
+// Per-node device-access tokens (resolved lazily from admin API)
+static String nodeTokens[MAX_NODES];
+// Last config successfully pushed to each node (detect changes)
+static int    nodeLastFreq[MAX_NODES];
+static int    nodeLastInterval[MAX_NODES];
 
-static const float kHrDef[]   = {67.0f, 75.0f, 65.0f};
-static const float kSpo2Def[] = {98.3f, 98.1f, 97.8f};
-static const float kTempDef[] = {36.4f, 36.8f, 36.4f};
-static const int   kNDef      = 3;
-
-static void initNodeVitals(int n) {
-  nodeHr[n]   = n < kNDef ? kHrDef[n]   : 72.0f + n * 2.0f;
-  nodeSpo2[n] = n < kNDef ? kSpo2Def[n] : 98.5f - n * 0.2f;
-  nodeTemp[n] = n < kNDef ? kTempDef[n] : 36.6f + n * 0.1f;
-}
-
-static float frand() {
-  return ((float)(rand() % 1000) - 500.0f) / 500.0f;  // -1.0 to 1.0
-}
+// Per-node received vitals (updated by UART vital packets)
+static float nodeHr[MAX_NODES]    = {};
+static float nodePpgHr[MAX_NODES] = {};
+static float nodeSpo2[MAX_NODES]  = {};
+static float nodeTemp[MAX_NODES]  = {};
 
 // ── Runtime state ─────────────────────────────────────────────────────────────
 
@@ -96,16 +110,28 @@ static WiFiClientSecure adminClient;
 static WiFiClient   mqttNetClient;
 static PubSubClient mqttClient(mqttNetClient);
 
-// ── ECG sampling buffers ───────────────────────────────────────────────────────
+// ── UART parser state machine ─────────────────────────────────────────────────
 
-static int16_t ecgWork[BATCH_SIZE];
-static volatile unsigned long long readyTs          = 0;
-static volatile uint32_t           readySampleCount = 0;
-static volatile bool               batchReady       = false;
-static int workIdx = 0;
+enum UartSm { SM_M0, SM_M1, SM_TYPE, SM_NL, SM_NAME, SM_LL, SM_LH, SM_DATA, SM_CHK };
 
-static unsigned long lastVitalMs = 0;
-static char          payload[PAYLOAD_BUF_SIZE];
+static UartSm   smState    = SM_M0;
+static uint8_t  pktType    = 0;
+static char     pktName[PKT_MAX_NAME + 1] = {};
+static uint8_t  pktNameLen = 0;
+static uint8_t  pktNameIdx = 0;
+static uint8_t  pktData[PKT_MAX_DATA] = {};
+static uint16_t pktDataLen = 0;
+static uint16_t pktDataIdx = 0;
+static uint8_t  pktXor     = 0;
+
+// ── Per-node incoming data buffers ────────────────────────────────────────────
+
+static int16_t            nodeBatch[MAX_NODES][BATCH_SIZE];
+static bool               nodeBatchReady[MAX_NODES] = {};
+static unsigned long long nodeBatchTs[MAX_NODES]    = {};
+static bool               nodeVitalReady[MAX_NODES] = {};
+
+static char payload[PAYLOAD_BUF_SIZE];
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -328,11 +354,12 @@ static int tbGet(const String& path, String& out) {
 // ── Sync node registry with ThingsBoard ───────────────────────────────────────
 
 static void syncNodes() {
-  if (!ensureJwt()) return;
-
+  xSemaphoreTake(adminMutex, portMAX_DELAY);
+  bool jwtOk = ensureJwt();
   String resp;
-  int code = tbGet("/api/tenant/devices?pageSize=100&page=0", resp);
-  if (code != 200) { Serial.printf("[Sync] devices fetch %d\n", code); return; }
+  int code = jwtOk ? tbGet("/api/tenant/devices?pageSize=100&page=0", resp) : -1;
+  xSemaphoreGive(adminMutex);
+  if (!jwtOk || code != 200) { Serial.printf("[Sync] devices fetch %d\n", code); return; }
 
   String newNames[MAX_NODES];
   int newCount = 0;
@@ -353,6 +380,8 @@ static void syncNodes() {
   for (int i = 0; i < newCount && !changed; i++)
     if (nodeNames[i] != newNames[i]) changed = true;
   if (changed) {
+    // Invalidate cached tokens — indices may have shifted
+    for (int j = 0; j < MAX_NODES; j++) { nodeTokens[j] = ""; nodeLastFreq[j] = 0; nodeLastInterval[j] = 0; }
     nodeCount = newCount;
     for (int i = 0; i < nodeCount; i++) nodeNames[i] = newNames[i];
   }
@@ -363,6 +392,131 @@ static void syncNodes() {
   Serial.printf("[Sync] %d node(s):", newCount);
   for (int i = 0; i < newCount; i++) Serial.printf(" %s", newNames[i].c_str());
   Serial.println();
+}
+
+// ── Node token resolution (caller must hold adminMutex) ───────────────────────
+// Resolves the device-access token for the named node via admin API.
+
+static bool resolveNodeToken(const String& name, String& tokenOut) {
+  if (!ensureJwt()) return false;
+  String resp;
+  if (tbGet("/api/tenant/devices?pageSize=100&page=0", resp) != 200) return false;
+
+  // Find the entry matching this name and extract its device UUID
+  String nameTag = "\"name\":\"" + name + "\"";
+  int np = resp.indexOf(nameTag);
+  if (np < 0) return false;
+  String idMark = "\"entityType\":\"DEVICE\",\"id\":\"";
+  int mp = resp.lastIndexOf(idMark, np);
+  if (mp < 0) return false;
+  mp += idMark.length();
+  int me = resp.indexOf("\"", mp);
+  if (me <= mp) return false;
+  String devId = resp.substring(mp, me);
+
+  String credResp;
+  if (tbGet("/api/device/" + devId + "/credentials", credResp) != 200) return false;
+  tokenOut = jsonStr(credResp, "credentialsId");
+  return tokenOut.length() > 0;
+}
+
+// ── Fetch ECG config from TB shared attributes (caller must hold adminMutex) ──
+// Uses the device-access token (same as gateway.py fetch_ecg_settings).
+
+static bool fetchNodeConfig(const String& token, int& freq, int& interval) {
+  adminClient.setInsecure();
+  HTTPClient http;
+  String url = tbUrl("/api/v1/" + token
+    + "/attributes?sharedKeys=" TB_KEY_FREQ "," TB_KEY_INTERVAL);
+  http.begin(adminClient, url);
+  int code = http.GET();
+  String body = http.getString();
+  http.end();
+  if (code != 200) return false;
+
+  // body: {"shared":{"ecgSampleFreq":250,"ecgPacketInterval":200}}
+  String fk = "\"" TB_KEY_FREQ "\":";
+  int fp = body.indexOf(fk);
+  if (fp >= 0) { int v = body.substring(fp + fk.length()).toInt(); if (v > 0) freq = v; }
+  String ik = "\"" TB_KEY_INTERVAL "\":";
+  int ip = body.indexOf(ik);
+  if (ip >= 0) { int v = body.substring(ip + ik.length()).toInt(); if (v > 0) interval = v; }
+  return true;
+}
+
+// ── Send ECG config via UART to nRF52832 central ─────────────────────────────
+// Frame: [0xAA][0x55][0x03][NAME_LEN][NAME...][0x05][0x00][0xCF][fLo][fHi][iLo][iHi][XOR]
+// nRF52832 central forwards the 5-byte payload to the BLE node's RX characteristic.
+
+static void sendUartConfig(const String& name, int freq, int interval) {
+  uint8_t nlen = (uint8_t)min((int)name.length(), PKT_MAX_NAME);
+  const uint8_t DLEN = 5;
+  uint8_t data[DLEN] = {
+    ECG_CFG_CMD,
+    (uint8_t)(freq & 0xFF),     (uint8_t)((freq >> 8) & 0xFF),
+    (uint8_t)(interval & 0xFF), (uint8_t)((interval >> 8) & 0xFF),
+  };
+  uint8_t xorChk = PKT_TYPE_CFG;
+  xorChk ^= nlen;
+  for (int i = 0; i < nlen; i++) xorChk ^= (uint8_t)name[i];
+  xorChk ^= (DLEN & 0xFF);
+  xorChk ^= ((DLEN >> 8) & 0xFF);
+  for (int i = 0; i < DLEN; i++) xorChk ^= data[i];
+
+  Serial2.write((uint8_t)0xAA);
+  Serial2.write((uint8_t)0x55);
+  Serial2.write(PKT_TYPE_CFG);
+  Serial2.write(nlen);
+  for (int i = 0; i < nlen; i++) Serial2.write((uint8_t)name[i]);
+  Serial2.write((uint8_t)(DLEN & 0xFF));
+  Serial2.write((uint8_t)((DLEN >> 8) & 0xFF));
+  Serial2.write(data, DLEN);
+  Serial2.write(xorChk);
+
+  Serial.printf("[CFG] -> %s: %d Hz, %d ms\n", name.c_str(), freq, interval);
+}
+
+// ── ECG config sync task — mirrors gateway.py ecg_attr_update_worker ─────────
+// Polls TB shared attributes every CONFIG_SYNC_MS; sends UART config on change.
+// Runs on Core 0 alongside nodeSyncTask (adminMutex prevents HTTPS conflicts).
+
+static void configSyncTask(void*) {
+  for (;;) {
+    vTaskDelay(pdMS_TO_TICKS(CONFIG_SYNC_MS));
+
+    // Snapshot node list under nodeMutex
+    xSemaphoreTake(nodeMutex, portMAX_DELAY);
+    int    count = nodeCount;
+    String names[MAX_NODES];
+    for (int i = 0; i < count; i++) names[i] = nodeNames[i];
+    xSemaphoreGive(nodeMutex);
+
+    for (int i = 0; i < count; i++) {
+      xSemaphoreTake(adminMutex, portMAX_DELAY);
+
+      if (nodeTokens[i].length() == 0) {
+        String tok;
+        if (resolveNodeToken(names[i], tok)) {
+          nodeTokens[i] = tok;
+          Serial.printf("[CFG] %s token resolved\n", names[i].c_str());
+        }
+      }
+
+      int freq     = DEFAULT_FREQ_HZ;
+      int interval = DEFAULT_INTERVAL_MS;
+      bool ok = nodeTokens[i].length() > 0
+             && fetchNodeConfig(nodeTokens[i], freq, interval);
+
+      xSemaphoreGive(adminMutex);
+      if (!ok) continue;
+      if (freq == nodeLastFreq[i] && interval == nodeLastInterval[i]) continue;
+
+      nodeLastFreq[i]     = freq;
+      nodeLastInterval[i] = interval;
+      Serial.printf("[TB] %s config: %d Hz, %d ms\n", names[i].c_str(), freq, interval);
+      sendUartConfig(names[i], freq, interval);
+    }
+  }
 }
 
 // Runs on Core 0 — HTTPS never blocks the ECG publish loop on Core 1.
@@ -414,117 +568,119 @@ static bool mqttConnect() {
   return ok;
 }
 
-// ── Demo signal generators ─────────────────────────────────────────────────────
-// ECG: Gaussian QRS spike, 75 BPM (period = 200 samples at 250Hz)
-// Phase offset = n * 67 samples to stagger nodes
+// ── Node auto-registration from UART ─────────────────────────────────────────
 
-static int16_t ecgAt(uint32_t idx, int phaseOff) {
-  float phase = (float)((idx + phaseOff) % 200) / 200.0f;
-  float d = (phase - 0.5f) * 20.0f;
-  float v = 2000.0f * expf(-(d * d)) + (float)(rand() % 40 - 20);
-  return (int16_t)constrain((int)(2048.0f + v), 0, 4095);
-}
-
-// ── 250Hz sample timer ─────────────────────────────────────────────────────────
-
-static uint32_t sampleCount = 0;
-
-static void onSampleTimer(void*) {
-  ecgWork[workIdx] = ecgAt(sampleCount, 0);
-  sampleCount++;
-  if (++workIdx < BATCH_SIZE) return;
-  workIdx = 0;
-
-  if (batchReady) return;
-  readyTs          = epochMs();
-  readySampleCount = sampleCount;
-  batchReady       = true;
-}
-
-// ── Publish ECG waveform for all nodes ────────────────────────────────────────
-// Gateway format: {"NodeName":[{"ts":epoch,"values":{"ecg_batch":"[v0,v1,...]"}}]}
-// One publish per node; phase offset = node index * 67 samples.
-
-static void publishWaveform() {
-  if (nodeCount == 0 || !mqttConnect()) return;
-
-  uint32_t           baseIdx = readySampleCount - BATCH_SIZE;
-  unsigned long long ts      = readyTs > 0 ? readyTs : epochMs();
-
+static int ensureNode(const char* name) {
   xSemaphoreTake(nodeMutex, portMAX_DELAY);
-  int    snap = nodeCount;
-  String snapNames[MAX_NODES];
-  for (int i = 0; i < snap; i++) snapNames[i] = nodeNames[i];
+  for (int i = 0; i < nodeCount; i++) {
+    if (nodeNames[i] == name) { xSemaphoreGive(nodeMutex); return i; }
+  }
+  if (nodeCount >= MAX_NODES) { xSemaphoreGive(nodeMutex); return -1; }
+  int idx       = nodeCount++;
+  nodeNames[idx] = String(name);
   xSemaphoreGive(nodeMutex);
+  saveNodesToNVS();
+  Serial.printf("[UART] New node registered: %s (idx %d)\n", name, idx);
+  return idx;
+}
 
-  for (int n = 0; n < snap; n++) {
-    int phaseOff = n * 67;
-    int pos = 0;
+// ── UART packet handler ───────────────────────────────────────────────────────
 
-    pos += snprintf(payload + pos, PAYLOAD_BUF_SIZE - pos, "{\"");
-    for (unsigned int c = 0; c < snapNames[n].length() && pos < PAYLOAD_BUF_SIZE - 2; c++)
-      payload[pos++] = snapNames[n][c];
-    pos += snprintf(payload + pos, PAYLOAD_BUF_SIZE - pos,
-      "\":[{\"ts\":%llu,\"values\":{\"ecg_batch\":\"[", ts);
+static void handlePacket() {
+  int idx = ensureNode(pktName);
+  if (idx < 0) { Serial.println("[UART] Node registry full"); return; }
 
-    for (int i = 0; i < BATCH_SIZE && pos < PAYLOAD_BUF_SIZE - 20; i++) {
-      if (i > 0) payload[pos++] = ',';
-      pos += snprintf(payload + pos, PAYLOAD_BUF_SIZE - pos,
-        "%d", ecgAt(baseIdx + i, phaseOff));
-    }
-    pos += snprintf(payload + pos, PAYLOAD_BUF_SIZE - pos, "]\"}}]}");
-
-    bool ok = mqttClient.publish("v1/gateway/telemetry", (uint8_t*)payload, pos);
-    Serial.printf("[%s] wave %s %d bytes\n", snapNames[n].c_str(), ok ? "OK" : "FAIL", pos);
+  if (pktType == PKT_TYPE_ECG && pktDataLen == BATCH_SIZE * 2) {
+    for (int i = 0; i < BATCH_SIZE; i++)
+      nodeBatch[idx][i] = (int16_t)(pktData[i * 2] | ((uint16_t)pktData[i * 2 + 1] << 8));
+    nodeBatchTs[idx]    = epochMs();
+    nodeBatchReady[idx] = true;
+  } else if (pktType == PKT_TYPE_VIT && pktDataLen == 16) {
+    float vals[4];
+    memcpy(vals, pktData, 16);
+    nodeHr[idx]         = vals[0];
+    nodePpgHr[idx]      = vals[1];
+    nodeSpo2[idx]       = vals[2];
+    nodeTemp[idx]       = vals[3];
+    nodeVitalReady[idx] = true;
+  } else {
+    Serial.printf("[UART] Unknown pkt type=0x%02X len=%u\n", pktType, pktDataLen);
   }
 }
 
-// ── Publish vitals for all nodes ───────────────────────────────────────────────
-// Gateway format: {"Node1":[{...}],"Node2":[{...}],...}
+// ── UART state-machine reader ─────────────────────────────────────────────────
 
-static void publishVitals() {
-  xSemaphoreTake(nodeMutex, portMAX_DELAY);
-  int    snap = nodeCount;
-  String snapNames[MAX_NODES];
-  for (int i = 0; i < snap; i++) snapNames[i] = nodeNames[i];
-  xSemaphoreGive(nodeMutex);
-
-  if (snap == 0 || !mqttConnect()) return;
-
-  unsigned long long ts = epochMs();
-  int pos = snprintf(payload, PAYLOAD_BUF_SIZE, "{");
-
-  for (int n = 0; n < snap; n++) {
-    // Lazy-init on first call, then random walk (mirrors test-direct-stream.js)
-    if (nodeHr[n] == 0.0f) initNodeVitals(n);
-    nodeHr[n]   = constrain(nodeHr[n]   + frand() * 1.0f,   50.0f, 110.0f);
-    nodeSpo2[n] = constrain(nodeSpo2[n] + frand() * 0.15f,  93.0f, 100.0f);
-    nodeTemp[n] = constrain(nodeTemp[n] + frand() * 0.05f, 36.0f,  37.8f);
-    float ppgHr = nodeHr[n] - 1.0f + frand() * 0.5f;
-
-    if (n > 0) payload[pos++] = ',';
-    payload[pos++] = '"';
-    for (unsigned int c = 0; c < snapNames[n].length() && pos < PAYLOAD_BUF_SIZE - 2; c++)
-      payload[pos++] = snapNames[n][c];
-
-    if (ts > 0) {
-      pos += snprintf(payload + pos, PAYLOAD_BUF_SIZE - pos,
-        "\":[{\"ts\":%llu,\"values\":"
-        "{\"ecgHeartRate\":%.1f,\"ppgHeartRate\":%.1f,\"spo2\":%.1f,\"temperature\":%.1f}}]",
-        ts, nodeHr[n], ppgHr, nodeSpo2[n], nodeTemp[n]);
-    } else {
-      pos += snprintf(payload + pos, PAYLOAD_BUF_SIZE - pos,
-        "\":[{\"values\":"
-        "{\"ecgHeartRate\":%.1f,\"ppgHeartRate\":%.1f,\"spo2\":%.1f,\"temperature\":%.1f}}]",
-        nodeHr[n], ppgHr, nodeSpo2[n], nodeTemp[n]);
+static void readUart() {
+  while (Serial2.available()) {
+    uint8_t b = (uint8_t)Serial2.read();
+    switch (smState) {
+      case SM_M0: if (b == 0xAA) smState = SM_M1; break;
+      case SM_M1: smState = (b == 0x55) ? SM_TYPE : SM_M0; break;
+      case SM_TYPE:
+        pktType = b; pktXor = b; smState = SM_NL; break;
+      case SM_NL:
+        pktNameLen = (b < PKT_MAX_NAME) ? b : PKT_MAX_NAME;
+        pktNameIdx = 0; pktXor ^= b;
+        smState = (pktNameLen > 0) ? SM_NAME : SM_LL; break;
+      case SM_NAME:
+        pktName[pktNameIdx++] = (char)b; pktXor ^= b;
+        if (pktNameIdx >= pktNameLen) { pktName[pktNameIdx] = '\0'; smState = SM_LL; }
+        break;
+      case SM_LL:
+        pktDataLen = b; pktXor ^= b; smState = SM_LH; break;
+      case SM_LH:
+        pktDataLen |= ((uint16_t)b << 8); pktXor ^= b;
+        pktDataIdx  = 0;
+        smState = (pktDataLen > 0) ? SM_DATA : SM_CHK; break;
+      case SM_DATA:
+        if (pktDataIdx < PKT_MAX_DATA) pktData[pktDataIdx] = b;
+        pktXor ^= b;
+        if (++pktDataIdx >= pktDataLen) smState = SM_CHK;
+        break;
+      case SM_CHK:
+        if (b == pktXor) handlePacket();
+        else Serial.printf("[UART] Bad XOR: got 0x%02X expected 0x%02X\n", b, pktXor);
+        smState = SM_M0; break;
     }
-    Serial.printf("[%s] vitals ECG-HR:%.1f PPG-HR:%.1f SpO2:%.1f\n",
-      snapNames[n].c_str(), nodeHr[n], ppgHr, nodeSpo2[n]);
   }
-  payload[pos++] = '}';
+}
 
+// ── Publish one ECG batch ─────────────────────────────────────────────────────
+// Format: {"NodeName":[{"ts":epochMs,"values":{"ecg_batch":"[v0,v1,...]"}}]}
+
+static void publishEcgBatch(int idx, const String& name, unsigned long long ts) {
+  if (!mqttConnect()) return;
+  int pos = 0;
+  pos += snprintf(payload + pos, PAYLOAD_BUF_SIZE - pos, "{\"");
+  for (unsigned int c = 0; c < name.length() && pos < PAYLOAD_BUF_SIZE - 2; c++)
+    payload[pos++] = name[c];
+  pos += snprintf(payload + pos, PAYLOAD_BUF_SIZE - pos,
+    "\":[{\"ts\":%llu,\"values\":{\"ecg_batch\":\"[", ts);
+  for (int i = 0; i < BATCH_SIZE && pos < PAYLOAD_BUF_SIZE - 20; i++) {
+    if (i > 0) payload[pos++] = ',';
+    pos += snprintf(payload + pos, PAYLOAD_BUF_SIZE - pos, "%d", nodeBatch[idx][i]);
+  }
+  pos += snprintf(payload + pos, PAYLOAD_BUF_SIZE - pos, "]\"}}]}");
   bool ok = mqttClient.publish("v1/gateway/telemetry", (uint8_t*)payload, pos);
-  if (!ok) Serial.println("[Vitals] Publish FAILED");
+  Serial.printf("[%s] ECG %s %d bytes\n", name.c_str(), ok ? "OK" : "FAIL", pos);
+}
+
+// ── Publish vitals for one node ───────────────────────────────────────────────
+
+static void publishVitalPacket(int idx, const String& name) {
+  if (!mqttConnect()) return;
+  unsigned long long ts  = epochMs();
+  int                pos = 0;
+  pos += snprintf(payload + pos, PAYLOAD_BUF_SIZE - pos, "{\"%s\":[{", name.c_str());
+  if (ts > 0)
+    pos += snprintf(payload + pos, PAYLOAD_BUF_SIZE - pos, "\"ts\":%llu,", ts);
+  pos += snprintf(payload + pos, PAYLOAD_BUF_SIZE - pos,
+    "\"values\":{\"ecgHeartRate\":%.1f,\"ppgHeartRate\":%.1f,"
+    "\"spo2\":%.1f,\"temperature\":%.1f}}]}",
+    nodeHr[idx], nodePpgHr[idx], nodeSpo2[idx], nodeTemp[idx]);
+  bool ok = mqttClient.publish("v1/gateway/telemetry", (uint8_t*)payload, pos);
+  Serial.printf("[%s] vitals ECG-HR:%.1f PPG-HR:%.1f SpO2:%.1f %s\n",
+    name.c_str(), nodeHr[idx], nodePpgHr[idx], nodeSpo2[idx], ok ? "OK" : "FAIL");
 }
 
 // ── setup / loop ──────────────────────────────────────────────────────────────
@@ -546,34 +702,40 @@ void setup() {
   mqttClient.setServer(TB_HOST, TB_MQTT_PORT);
   mqttClient.setBufferSize(MQTT_BUF_SIZE);
 
-  nodeMutex = xSemaphoreCreateMutex();
-  xTaskCreatePinnedToCore(nodeSyncTask, "nodeSync", 8192, NULL, 1, NULL, 0);
+  nodeMutex  = xSemaphoreCreateMutex();
+  adminMutex = xSemaphoreCreateMutex();
+  memset(nodeLastFreq,     0, sizeof(nodeLastFreq));
+  memset(nodeLastInterval, 0, sizeof(nodeLastInterval));
+  xTaskCreatePinnedToCore(nodeSyncTask,   "nodeSync", 8192, NULL, 1, NULL, 0);
+  xTaskCreatePinnedToCore(configSyncTask, "cfgSync",  8192, NULL, 1, NULL, 0);
+
+  Serial2.begin(UART_BAUD, SERIAL_8N1, UART_RX_PIN, UART_TX_PIN);
+  Serial.printf("[UART] Listening on RX=%d TX=%d @ %d baud\n",
+    UART_RX_PIN, UART_TX_PIN, UART_BAUD);
 
   mqttConnect();
 
-  esp_timer_create_args_t args = {};
-  args.callback = onSampleTimer;
-  args.name     = "sample";
-  esp_timer_handle_t timer;
-  esp_timer_create(&args, &timer);
-  esp_timer_start_periodic(timer, SAMPLE_INTERVAL_US);
-
-  Serial.printf("Ready — %d node(s) @ %dHz\n", nodeCount, SAMPLE_RATE_HZ);
+  Serial.printf("Ready — %d node(s) loaded, waiting for UART data\n", nodeCount);
 }
 
 void loop() {
   mqttClient.loop();
+  readUart();
 
-  if (batchReady) {
-    publishWaveform();
-    batchReady = false;
+  for (int i = 0; i < MAX_NODES; i++) {
+    if (nodeBatchReady[i]) {
+      nodeBatchReady[i] = false;
+      xSemaphoreTake(nodeMutex, portMAX_DELAY);
+      String name = (i < nodeCount) ? nodeNames[i] : "";
+      xSemaphoreGive(nodeMutex);
+      if (name.length()) publishEcgBatch(i, name, nodeBatchTs[i]);
+    }
+    if (nodeVitalReady[i]) {
+      nodeVitalReady[i] = false;
+      xSemaphoreTake(nodeMutex, portMAX_DELAY);
+      String name = (i < nodeCount) ? nodeNames[i] : "";
+      xSemaphoreGive(nodeMutex);
+      if (name.length()) publishVitalPacket(i, name);
+    }
   }
-
-  unsigned long nowMs = millis();
-
-  if (nowMs - lastVitalMs >= VITAL_INTERVAL_MS) {
-    lastVitalMs = nowMs;
-    publishVitals();
-  }
-
 }

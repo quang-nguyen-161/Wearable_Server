@@ -117,7 +117,7 @@ the captive portal on first boot.
 const char* TB_HOST = "<SERVER_DIRECT_IP>";
 
 // Line ~118 — Admin API hostname (HTTPS via Cloudflare)
-static const char* TB_ADMIN_HOST = "<YOUR_TB_HOST>";
+static const char* TB_ADMIN_HOST = "<YOUR_TB      _HOST>";
 
 // Line ~37 — Gateway access token
 #define TB_GATEWAY_TOKEN "<GATEWAY_ACCESS_TOKEN>"

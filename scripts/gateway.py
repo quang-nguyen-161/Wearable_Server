@@ -65,7 +65,31 @@ NO_DATA_TIMEOUT_S = 6        # seconds without a packet before reconnecting
 _parsed     = urlparse(BROKER_URL)
 MQTT_HOST   = _parsed.hostname or '103.116.39.179'
 MQTT_PORT   = _parsed.port or 1883
-MQTT_TOPIC  = 'v1/gateway/telemetry'
+MQTT_TOPIC       = 'v1/gateway/telemetry'
+ATTR_REQ_TOPIC   = 'v1/gateway/attributes/request'
+ATTR_RESP_TOPIC  = 'v1/gateway/attributes/response'
+ATTR_PUSH_TOPIC  = 'v1/gateway/attributes'
+
+
+# ── BLE address — thread-safe, updated from ThingsBoard ───────────────
+_ble_addr_lock    = threading.Lock()
+_current_ble_addr = BLE_ADDRESS
+ble_addr_changed  = threading.Event()
+
+def get_ble_address():
+    with _ble_addr_lock:
+        return _current_ble_addr
+
+def set_ble_address(addr):
+    global _current_ble_addr
+    addr = addr.strip().lower()
+    if not addr:
+        return
+    with _ble_addr_lock:
+        if addr != _current_ble_addr:
+            print(f'[TB] BLE address updated: {_current_ble_addr} → {addr}')
+            _current_ble_addr = addr
+            ble_addr_changed.set()
 
 
 # ── MQTT publish queue (background thread) ────────────────────────────
@@ -74,12 +98,44 @@ publish_q = queue.Queue(maxsize=50)   # ~10s of backlog at 200ms/batch
 
 mqtt_connected = threading.Event()
 mqtt           = None
+_attr_req_id   = 0
+
+
+def _request_ble_address(client):
+    global _attr_req_id
+    _attr_req_id += 1
+    payload = json.dumps({"id": _attr_req_id, "device": TB_NODE_NAME,
+                          "client": False, "key": "bleAddress"})
+    client.publish(ATTR_REQ_TOPIC, payload)
+    print(f'[TB] Requested bleAddress for {TB_NODE_NAME}')
+
+
+def mqtt_on_message(client, userdata, msg):
+    try:
+        data  = json.loads(msg.payload.decode())
+        topic = msg.topic
+        if topic == ATTR_RESP_TOPIC:
+            # Response to our attribute request: {"id":1,"device":"Node1","value":"xx:xx:.."}
+            addr = data.get('value')
+            if addr:
+                set_ble_address(addr)
+        elif topic == ATTR_PUSH_TOPIC:
+            # Push when SHARED_SCOPE attribute changes: {"device":"Node1","data":{"bleAddress":"xx:..}}
+            if data.get('device') == TB_NODE_NAME:
+                addr = data.get('data', {}).get('bleAddress')
+                if addr:
+                    set_ble_address(addr)
+    except Exception as e:
+        print(f'[MQTT] Message parse error: {e}')
 
 
 def mqtt_on_connect(client, userdata, flags, rc):
     if rc == 0:
         print(f'[MQTT] Connected to {MQTT_HOST}:{MQTT_PORT}')
+        client.subscribe(ATTR_RESP_TOPIC)
+        client.subscribe(ATTR_PUSH_TOPIC)
         mqtt_connected.set()
+        _request_ble_address(client)
     else:
         print(f'[MQTT] Connection failed rc={rc}')
 
@@ -97,6 +153,7 @@ def mqtt_setup():
     mqtt.username_pw_set(ACCESS_TOKEN, '')
     mqtt.on_connect    = mqtt_on_connect
     mqtt.on_disconnect = mqtt_on_disconnect
+    mqtt.on_message    = mqtt_on_message
     mqtt.connect_async(MQTT_HOST, MQTT_PORT, keepalive=30)
     mqtt.loop_start()
 
@@ -160,11 +217,17 @@ def wait_for_bluetooth():
 
 def ble_connect(adapter):
     wait_for_bluetooth()
-    print(f'Scanning for {BLE_ADDRESS}...')
+    target = get_ble_address()
+    print(f'Scanning for {target}...')
     while True:
+        if ble_addr_changed.is_set():
+            # Address updated while scanning — restart with new address
+            target = get_ble_address()
+            ble_addr_changed.clear()
+            print(f'Scanning for updated address {target}...')
         adapter.scan_for(3000)
         for p in adapter.scan_get_results():
-            if p.address().lower() == BLE_ADDRESS.lower():
+            if p.address().lower() == target.lower():
                 print(f'Found {p.identifier()} [{p.address()}] — connecting...')
                 p.connect()
                 return p
@@ -182,7 +245,7 @@ def main():
     print('  BLE ECG Gateway -> ThingsBoard (MQTT)')
     print('=' * 49)
     print(f'Broker -> {MQTT_HOST}:{MQTT_PORT}')
-    print(f'Node   -> {TB_NODE_NAME}  |  BLE -> {BLE_ADDRESS}')
+    print(f'Node   -> {TB_NODE_NAME}  |  BLE -> {get_ble_address()} (may be overridden by TB attribute)')
     print(f'ECG    -> {PACKET_SAMPLES} samples/packet, 200ms interval\n')
 
     mqtt_setup()
@@ -197,15 +260,19 @@ def main():
     peripheral = None
     try:
         while True:
+            ble_addr_changed.clear()
             try:
                 peripheral = ble_connect(adapter)
                 global last_rx_ts
                 last_rx_ts = time.time()
                 peripheral.notify(SERVICE_UUID, CHARACTERISTIC_UUID, on_notify)
-                print('Streaming ECG to ThingsBoard via MQTT. Ctrl+C to stop.\n')
+                print(f'Streaming ECG ({get_ble_address()}) to ThingsBoard via MQTT. Ctrl+C to stop.\n')
 
                 while True:
                     time.sleep(2)
+                    if ble_addr_changed.is_set():
+                        print(f'[BLE] BLE address changed — reconnecting to {get_ble_address()}...')
+                        break
                     if time.time() - last_rx_ts > NO_DATA_TIMEOUT_S:
                         print(f'[BLE] No data for {NO_DATA_TIMEOUT_S}s — reconnecting...')
                         break
