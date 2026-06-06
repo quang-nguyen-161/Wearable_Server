@@ -733,6 +733,7 @@ export default function Dashboard() {
   const [vitalsMap,        setVitalsMap]        = useState({}); // { [deviceId]: vitals }
   const [notificationsOn,  setNotificationsOn]  = useState(true);
   const [addNodeModal,     setAddNodeModal]     = useState(false);
+  const [deviceModeMap,    setDeviceModeMap]    = useState({});
 
   /* ── TB token for WebSocket — use browser login token directly ── */
   const { token: tbAuthToken, logout } = useTbAuth();
@@ -801,13 +802,17 @@ export default function Dashboard() {
       const list = await getDevices(tbAuthToken);
       setDevices(list);
       if (list.length > 0 && !selectedDeviceId) setSelectedDeviceId(list[0].id);
-      // Load showEcg attribute for every device in parallel
+      // Load showEcg + deviceMode attributes for every device in parallel
       const results = await Promise.allSettled(list.map(d => getDeviceAttributes(tbAuthToken, d.id)));
-      const map = {};
+      const ecgMap  = {};
+      const modeMap = {};
       results.forEach((r, i) => {
-        map[list[i].id] = r.status === "fulfilled" ? (r.value.showEcg ?? true) : true;
+        const v = r.status === "fulfilled" ? r.value : {};
+        ecgMap[list[i].id]  = v.showEcg    ?? true;
+        modeMap[list[i].id] = v.deviceMode ?? 1;
       });
-      setEcgEnabledMap(map);
+      setEcgEnabledMap(ecgMap);
+      setDeviceModeMap(modeMap);
     } catch (err) {
       console.error("Device list fetch error:", err);
       setError(err.message);
@@ -827,6 +832,18 @@ export default function Dashboard() {
       setEcgEnabledMap(prev => ({ ...prev, [deviceId]: currentlyEnabled }));
     }
   }, [tbAuthToken]);
+
+  /* ── Set operating mode for a device (1=Continuous, 2=Periodic, 3=ECG) ── */
+  const handleSetDeviceMode = useCallback(async (deviceId, mode) => {
+    const prev = deviceModeMap[deviceId] ?? 1;
+    setDeviceModeMap(p => ({ ...p, [deviceId]: mode }));
+    try {
+      await saveDeviceAttributes(tbAuthToken, deviceId, "SHARED_SCOPE", { deviceMode: mode });
+    } catch (e) {
+      console.error("Failed to save deviceMode:", e);
+      setDeviceModeMap(p => ({ ...p, [deviceId]: prev }));
+    }
+  }, [tbAuthToken, deviceModeMap]);
 
   /* ── Delete a node device ── */
   const handleDeleteNode = useCallback(async (deviceId, deviceName) => {
@@ -1103,6 +1120,49 @@ export default function Dashboard() {
             <div className="patient-expand-hint">▸ VIEW</div>
           </div>
         )}
+
+        {/* ── Device mode tabs ── */}
+        {selectedDeviceId && (() => {
+          const mode = deviceModeMap[selectedDeviceId] ?? 1;
+          const MODES = [
+            { id: 1, icon: "⚡", label: "Continuous",  desc: "Real-time full data stream" },
+            { id: 2, icon: "⏱",  label: "Periodic",    desc: "Reports at the vital interval" },
+            { id: 3, icon: "💓", label: "ECG Mode",     desc: "Dedicated ECG capture" },
+          ];
+          const intervalLabel = settings.vitalInterval >= 1000
+            ? `${settings.vitalInterval / 1000}s`
+            : `${settings.vitalInterval}ms`;
+          return (
+            <div className="device-mode-bar">
+              <span className="device-mode-label">MODE</span>
+              <div className="device-mode-tabs">
+                {MODES.map(m => (
+                  <button
+                    key={m.id}
+                    className={`device-mode-tab${mode === m.id ? " device-mode-tab--active" : ""}`}
+                    onClick={() => handleSetDeviceMode(selectedDeviceId, m.id)}
+                    title={m.desc}
+                  >
+                    <span className="mode-icon">{m.icon}</span>
+                    <span className="mode-label">{m.label}</span>
+                  </button>
+                ))}
+              </div>
+              {mode === 2 && (
+                <div className="device-mode-hint">
+                  Interval: <strong>{intervalLabel}</strong>
+                  &nbsp;·&nbsp;
+                  <a
+                    href={`/settings?deviceId=${selectedDeviceId}`}
+                    className="mode-settings-link"
+                  >
+                    Adjust in Settings ⚙
+                  </a>
+                </div>
+              )}
+            </div>
+          );
+        })()}
 
         {/* ── Selected device header ── */}
         {selectedDevice && (
@@ -1691,6 +1751,74 @@ export default function Dashboard() {
           font-weight: 600;
         }
 
+        /* ── Device mode bar ── */
+        .device-mode-bar {
+          display: flex;
+          align-items: center;
+          gap: 14px;
+          padding: 9px 24px;
+          background: rgba(91, 155, 213, 0.03);
+          border-bottom: 1px solid rgba(0, 0, 0, 0.06);
+          flex-wrap: wrap;
+        }
+
+        .device-mode-label {
+          font-size: 10px;
+          font-weight: 700;
+          letter-spacing: 0.1em;
+          color: #94a3b8;
+          flex-shrink: 0;
+        }
+
+        .device-mode-tabs {
+          display: flex;
+          gap: 6px;
+        }
+
+        .device-mode-tab {
+          display: flex;
+          align-items: center;
+          gap: 5px;
+          padding: 5px 13px;
+          border-radius: 20px;
+          border: 1px solid rgba(148, 163, 184, 0.3);
+          background: transparent;
+          cursor: pointer;
+          font-size: 11px;
+          font-weight: 600;
+          color: #64748b;
+          transition: all 0.15s;
+          font-family: inherit;
+        }
+
+        .device-mode-tab:hover {
+          border-color: rgba(91, 155, 213, 0.5);
+          color: #1e293b;
+          background: rgba(91, 155, 213, 0.06);
+        }
+
+        .device-mode-tab--active {
+          background: rgba(91, 155, 213, 0.12);
+          border-color: rgba(91, 155, 213, 0.55);
+          color: #1e4e8c;
+        }
+
+        .mode-icon  { font-size: 12px; line-height: 1; }
+        .mode-label { letter-spacing: 0.04em; }
+
+        .device-mode-hint {
+          font-size: 11px;
+          color: #64748b;
+          margin-left: 2px;
+        }
+
+        .mode-settings-link {
+          color: #5b9bd5;
+          text-decoration: none;
+        }
+
+        .mode-settings-link:hover { text-decoration: underline; }
+
         /* ── Dark mode overrides ── */
         :global([data-theme="dark"]) .device-selector-bar {
           background: #0f172a;
@@ -1759,6 +1887,36 @@ export default function Dashboard() {
         :global([data-theme="dark"]) .active-device-label,
         :global([data-theme="dark"]) .active-device-id {
           color: #475569;
+        }
+
+        :global([data-theme="dark"]) .device-mode-bar {
+          background: rgba(0, 200, 255, 0.02);
+          border-bottom-color: rgba(255, 255, 255, 0.05);
+        }
+
+        :global([data-theme="dark"]) .device-mode-tab {
+          color: #64748b;
+          border-color: rgba(255, 255, 255, 0.08);
+        }
+
+        :global([data-theme="dark"]) .device-mode-tab:hover {
+          color: #e2e8f0;
+          border-color: rgba(0, 200, 255, 0.3);
+          background: rgba(0, 200, 255, 0.06);
+        }
+
+        :global([data-theme="dark"]) .device-mode-tab--active {
+          background: rgba(0, 200, 255, 0.1);
+          border-color: rgba(0, 200, 255, 0.4);
+          color: #00c8ff;
+        }
+
+        :global([data-theme="dark"]) .device-mode-hint {
+          color: #475569;
+        }
+
+        :global([data-theme="dark"]) .mode-settings-link {
+          color: #38bdf8;
         }
 
         :global([data-theme="dark"]) .no-devices {
