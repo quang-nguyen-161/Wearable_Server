@@ -1,0 +1,44 @@
+services:
+  thingsboard:
+    image: thingsboard/tb-postgres:latest
+    ports:
+      - "9090:9090"   # HTTP UI (direct access for initial setup)
+      - "1883:1883"   # MQTT (ESP32 gateway)
+      - "7070:7070"   # CoAP
+    volumes:
+      - tb-data:/data
+      - tb-logs:/var/log/thingsboard
+    environment:
+      TB_QUEUE_TYPE: in-memory
+    restart: unless-stopped
+
+  next-app:
+    build: .
+    environment:
+      # Server-side: talk to TB directly on Docker network (no nginx roundtrip)
+      TB_BASE_URL:               http://thingsboard:9090
+      TB_USERNAME:               ${TB_USERNAME:-tenant@thingsboard.org}
+      TB_PASSWORD:               ${TB_PASSWORD:-tenant}
+      TB_GATEWAY_ACCESS_TOKEN:   ${TB_GATEWAY_ACCESS_TOKEN}
+      # Browser-side: goes through nginx on the host
+      NEXT_PUBLIC_TB_BASE_URL:   http://localhost/tb
+      NEXT_PUBLIC_TB_WS_URL:     ws://localhost/api/ws/plugins/telemetry
+      NEXT_PUBLIC_TB_DEVICE_ID:  ${NEXT_PUBLIC_TB_DEVICE_ID}
+    depends_on:
+      - thingsboard
+    restart: unless-stopped
+
+  nginx:
+    image: nginx:alpine
+    ports:
+      - "80:80"
+    volumes:
+      - ./nginx/nginx.conf:/etc/nginx/conf.d/default.conf:ro
+    depends_on:
+      - next-app
+      - thingsboard
+    restart: unless-stopped
+
+volumes:
+  tb-data:
+  tb-logs:

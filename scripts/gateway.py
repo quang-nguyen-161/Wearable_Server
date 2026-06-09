@@ -52,7 +52,7 @@ load_env('../.env.local')
 
 # ── Config ────────────────────────────────────────────────────────────
 BROKER_URL   = os.environ.get('TB_MQTT_BROKER', 'mqtt://103.116.39.179:1883')
-ACCESS_TOKEN = os.environ.get('TB_GATEWAY_ACCESS_TOKEN', '')
+ACCESS_TOKEN = os.environ.get('TB_GATEWAY_ACCESS_TOKEN', '2Mm6LaNzXrqK7nZD6pe4')
 NODE_LIST_ENV = os.environ.get('NODE_LIST', '')          # "Node1:e5:..,Node2:aa:.."
 TB_NODE_NAME  = os.environ.get('TB_NODE_NAME', 'Node1')  # legacy single-node
 BLE_ADDRESS   = os.environ.get('BLE_ADDRESS',  'e5:39:e6:e4:d1:e8')
@@ -561,12 +561,21 @@ def ble_connect_node(adapter, node: NodeState):
             if p.address().lower() == target.lower():
                 print(f'[BLE] {node.name}: found [{p.address()}] - connecting')
                 p.connect()
-                # Windows BLE (WinRT) needs a moment to finish GATT service
-                # discovery after connect() returns; calling notify()/write
-                # too soon throws E_ILLEGAL_METHOD_CALL ("method called at
-                # an unexpected time").
-                time.sleep(1.5)
-                return p
+                # Windows BLE (WinRT) discovers GATT services asynchronously
+                # after connect() returns; calling notify()/write too soon
+                # throws E_ILLEGAL_METHOD_CALL or "Service ... not found".
+                # Poll until our service actually shows up instead of a fixed
+                # guess-delay — much more robust against slow discovery.
+                for _ in range(20):  # up to ~10 s
+                    try:
+                        if any(s.uuid().lower() == SERVICE_UUID.lower()
+                               for s in p.services()):
+                            return p
+                    except Exception:
+                        pass
+                    time.sleep(0.5)
+                print(f'[BLE] {node.name}: service not discovered after connect — disconnecting')
+                p.disconnect()
         print(f'[BLE] {node.name}: not found, retrying...')
         time.sleep(1)
 
