@@ -1,5 +1,5 @@
 // pages/index.js
-import { useState, useEffect, useCallback, useRef } from "react";
+import { useState, useEffect, useCallback, useRef, useContext, useMemo } from "react";
 import Head from "next/head";
 import VitalCard from "../components/VitalCard";
 import TrendChart from "../components/TrendChart";
@@ -12,7 +12,7 @@ import PrintModal from "../components/PrintModal";
 import OtaModal from "../components/OtaModal";
 import { useNotifications } from "../hooks/useNotifications";
 import { useTrends } from "../hooks/useTrends";
-import { useSettings } from "../context/SettingsContext";
+import { useSettings, SettingsContext } from "../context/SettingsContext";
 import { useTbAuth } from "../context/TbAuthContext";
 import { getDevices, getPatientInfo, getDeviceAttributes, saveDeviceAttributes, createDevice, addDeviceRelation, deleteDevice, GATEWAY_ID } from "../lib/tbBrowserClient";
 
@@ -191,7 +191,7 @@ function SignalModal({ signalKey, series, sampleFreqHz = 250, windowSec = 10, on
 }
 
 /* ── Overview Modal ──────────────────────────────────────────────────────── */
-function OverviewModal({ devices, vitalsMap, selectedDeviceId, onSelectDevice, onClose }) {
+function OverviewModal({ devices, vitalsMap, selectedDeviceId, onSelectDevice, onClose, settingsMap }) {
   useEffect(() => {
     const fn = e => { if (e.key === "Escape") onClose(); };
     window.addEventListener("keydown", fn);
@@ -253,6 +253,7 @@ function OverviewModal({ devices, vitalsMap, selectedDeviceId, onSelectDevice, o
           vitalsMap={vitalsMap}
           selectedDeviceId={selectedDeviceId}
           onSelectDevice={(id) => { onSelectDevice(id); onClose(); }}
+          settingsMap={settingsMap}
         />
       </div>
     </div>
@@ -744,6 +745,16 @@ export default function Dashboard() {
   /* ── Per-device settings (thresholds, vitalInterval, ecgSampleFreq) ── */
   const { settings, loadSettings } = useSettings(selectedDeviceId);
   useEffect(() => { loadSettings(); }, [selectedDeviceId, loadSettings]);
+
+  /* ── Load settings for all devices so OverviewGrid can use per-device thresholds ── */
+  const { loadSettings: loadAnySettings, getSettings } = useContext(SettingsContext);
+  useEffect(() => {
+    devices.forEach(d => loadAnySettings(d.id));
+  }, [devices, loadAnySettings]);
+  const settingsMap = useMemo(
+    () => Object.fromEntries(devices.map(d => [d.id, getSettings(d.id)])),
+    [devices, getSettings]
+  );
 
   /* ── WebSocket: real-time vitals + ECG/PPG for selected node ── */
   const {
@@ -1390,6 +1401,7 @@ export default function Dashboard() {
           selectedDeviceId={selectedDeviceId}
           onSelectDevice={setSelectedDeviceId}
           onClose={() => setOverviewModal(false)}
+          settingsMap={settingsMap}
         />
       )}
 

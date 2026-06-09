@@ -25,7 +25,7 @@ export const DEFAULT_SETTINGS = {
   thresholds:        DEFAULT_THRESHOLDS,
 };
 
-const SettingsContext = createContext(null);
+export const SettingsContext = createContext(null);
 
 // ── Provider ──────────────────────────────────────────────────────────────────
 export function SettingsProvider({ children }) {

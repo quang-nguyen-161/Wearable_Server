@@ -615,41 +615,6 @@ body {
   font-weight: 500;
 }
 
-.card-range {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  margin-bottom: 12px;
-}
-
-.range-bar-bg {
-  flex: 1;
-  height: 4px;
-  background: var(--border-base);
-  border-radius: 2px;
-  overflow: hidden;
-}
-
-.range-bar-fill {
-  height: 100%;
-  border-radius: 2px;
-  transition: width 0.8s cubic-bezier(0.34, 1.56, 0.64, 1);
-}
-
-.vital-card.color-cyan .range-bar-fill { background: var(--cyan); }
-.vital-card.color-green .range-bar-fill { background: var(--green); }
-.vital-card.color-amber .range-bar-fill { background: var(--amber); }
-.vital-card.color-red .range-bar-fill { background: var(--red); }
-.vital-card.color-purple .range-bar-fill { background: var(--purple); }
-.vital-card.color-pink .range-bar-fill { background: var(--pink); }
-
-.range-pct {
-  font-family: var(--font-body);
-  font-size: 0.7rem;
-  color: var(--text-secondary);
-  white-space: nowrap;
-  font-weight: 600;
-}
 
 .card-status {
   font-family: var(--font-body);

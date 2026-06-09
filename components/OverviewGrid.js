@@ -2,6 +2,8 @@
 // Shows all nodes in a compact grid — each card shows 3 vitals + alert status.
 // Click a node card to navigate to it in the main dashboard.
 
+import { DEFAULT_THRESHOLDS } from "../context/SettingsContext";
+
 const VITAL_META = {
   ppgHeartRate: { label: "PPG HR", unit: "bpm", color: "#5B9BD5" },
   ecgHeartRate: { label: "ECG HR", unit: "bpm", color: "#00c8ff" },
@@ -9,15 +11,8 @@ const VITAL_META = {
   temperature:  { label: "Temp",   unit: "°C",  color: "#FFC000" },
 };
 
-const THRESHOLDS = {
-  ppgHeartRate: { normalMin:60,   normalMax:100,  warnMin:50,  warnMax:120, dangerMin:40,   dangerMax:130  },
-  ecgHeartRate: { normalMin:60,   normalMax:100,  warnMin:50,  warnMax:120, dangerMin:40,   dangerMax:130  },
-  spo2:         { normalMin:95,   normalMax:100,  warnMin:90,  warnMax:100, dangerMin:88,   dangerMax:100  },
-  temperature:  { normalMin:36.1, normalMax:37.2, warnMin:35.5,warnMax:38.5,dangerMin:35.0, dangerMax:39.5 },
-};
-
-function getStatus(key, value) {
-  const t = THRESHOLDS[key];
+function getStatus(key, value, thresholds) {
+  const t = thresholds?.[key] ?? DEFAULT_THRESHOLDS[key];
   if (!t || value == null) return "none";
   if (value < t.dangerMin || value > t.dangerMax) return "dangerous";
   if (value < t.warnMin   || value > t.warnMax)   return "dangerous";
@@ -36,7 +31,7 @@ function StatusDot({ status }) {
   );
 }
 
-export default function OverviewGrid({ devices, vitalsMap, onSelectDevice, selectedDeviceId }) {
+export default function OverviewGrid({ devices, vitalsMap, onSelectDevice, selectedDeviceId, settingsMap }) {
   if (!devices?.length) return null;
 
   return (
@@ -48,14 +43,15 @@ export default function OverviewGrid({ devices, vitalsMap, onSelectDevice, selec
       background: "var(--bg-void, #f8f9fa)",
     }}>
       {devices.map(device => {
-        const vitals  = vitalsMap[device.id] || {};
+        const vitals     = vitalsMap[device.id] || {};
         const isSelected = device.id === selectedDeviceId;
+        const thresholds = settingsMap?.[device.id]?.thresholds;
 
         // Overall alert level
-        const statuses = Object.entries(THRESHOLDS).map(([key]) =>
-          getStatus(key, vitals[key]?.value)
+        const statuses = Object.keys(DEFAULT_THRESHOLDS).map(key =>
+          getStatus(key, vitals[key]?.value, thresholds)
         );
-        const hasAlert    = statuses.includes("dangerous") || statuses.includes("warning");
+        const hasAlert     = statuses.includes("dangerous") || statuses.includes("warning");
         const hasDangerous = statuses.includes("dangerous");
 
         return (
@@ -114,7 +110,7 @@ export default function OverviewGrid({ devices, vitalsMap, onSelectDevice, selec
             <div style={{ display:"grid", gridTemplateColumns:"repeat(2,1fr)", gap: 6 }}>
               {Object.entries(VITAL_META).map(([key, meta]) => {
                 const val    = vitals[key]?.value;
-                const status = getStatus(key, val);
+                const status = getStatus(key, val, thresholds);
                 return (
                   <div key={key} style={{
                     background: "var(--bg-void, #f8fafc)",

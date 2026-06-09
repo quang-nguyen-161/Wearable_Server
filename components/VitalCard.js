@@ -5,12 +5,11 @@ import { useEffect, useState } from "react";
  * Determines status and percentage within range for a vital.
  */
 function getVitalStatus(value, min, max, warnMin, warnMax, dangerMin, dangerMax) {
-  if (value === null || value === undefined) return { status: "normal", pct: 0 };
-  const pct = Math.min(100, Math.max(0, ((value - dangerMin) / (dangerMax - dangerMin)) * 100));
-  if (value < dangerMin || value > dangerMax) return { status: "dangerous", pct };
-  if (value < warnMin   || value > warnMax)   return { status: "dangerous", pct };
-  if (value < min       || value > max)        return { status: "warning",   pct };
-  return { status: "normal", pct };
+  if (value === null || value === undefined) return "normal";
+  if (value < dangerMin || value > dangerMax) return "dangerous";
+  if (value < warnMin   || value > warnMax)   return "dangerous";
+  if (value < min       || value > max)        return "warning";
+  return "normal";
 }
 
 const STATUS_LABELS = {
@@ -49,7 +48,7 @@ export default function VitalCard({
   const _warnMax   = warnMax   ?? max   + (max - min) * 0.25;
   const _dangerMin = dangerMin ?? min   - (max - min) * 0.5;
   const _dangerMax = dangerMax ?? max   + (max - min) * 0.5;
-  const { status, pct } = getVitalStatus(displayValue, min, max, _warnMin, _warnMax, _dangerMin, _dangerMax);
+  const status = getVitalStatus(displayValue, min, max, _warnMin, _warnMax, _dangerMin, _dangerMax);
 
   const isAlert = status === "dangerous";
 
@@ -74,16 +73,6 @@ export default function VitalCard({
           {loading && displayValue === null ? "––" : displayValue ?? "––"}
         </span>
         <span className="card-unit">{unit}</span>
-      </div>
-
-      <div className="card-range">
-        <div className="range-bar-bg">
-          <div
-            className="range-bar-fill"
-            style={{ width: `${loading ? 0 : pct}%` }}
-          />
-        </div>
-        <span className="range-pct">{Math.round(pct)}%</span>
       </div>
 
       <span className={`card-status ${status}`}>{STATUS_LABELS[status]}</span>
