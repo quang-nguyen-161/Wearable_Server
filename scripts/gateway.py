@@ -20,6 +20,7 @@ Install deps: pip install paho-mqtt simplepyble
 
 import os
 import json
+import socket
 import struct
 import time
 import queue
@@ -51,8 +52,10 @@ load_env('.env.local')
 load_env('../.env.local')
 
 # ── Config ────────────────────────────────────────────────────────────
-BROKER_URL   = os.environ.get('TB_MQTT_BROKER', 'mqtt://103.116.39.179:1883')
-ACCESS_TOKEN = os.environ.get('TB_GATEWAY_ACCESS_TOKEN', '2Mm6LaNzXrqK7nZD6pe4')
+BROKER_URL          = os.environ.get('TB_MQTT_BROKER', 'mqtt://103.116.39.179:1883')
+BROKER_URL_FALLBACK = os.environ.get('TB_MQTT_BROKER_FALLBACK', 'mqtt://localhost:1883')
+ACCESS_TOKEN          = os.environ.get('TB_GATEWAY_ACCESS_TOKEN', '2Mm6LaNzXrqK7nZD6pe4')
+ACCESS_TOKEN_FALLBACK = os.environ.get('TB_GATEWAY_ACCESS_TOKEN_FALLBACK', ACCESS_TOKEN)
 NODE_LIST_ENV = os.environ.get('NODE_LIST', '')          # "Node1:e5:..,Node2:aa:.."
 TB_NODE_NAME  = os.environ.get('TB_NODE_NAME', 'Node1')  # legacy single-node
 BLE_ADDRESS   = os.environ.get('BLE_ADDRESS',  'e5:39:e6:e4:d1:e8')
@@ -62,13 +65,37 @@ CHARACTERISTIC_UUID = "6e401401-b5a3-f393-e0a9-e50e24dcca9e"
 RX_CHAR_UUID        = "6e401402-b5a3-f393-e0a9-e50e24dcca9e"
 
 PACKET_SAMPLES    = 50       # ECG: 50 × int16 LE = 100 bytes (default batch)
-VITALS_SIZE       = 16       # Vitals: 4 × float32 LE = 16 bytes
+VITALS_SIZE       = 5        # Vitals: [hrEcg u8][hrPpg u8][spo2 u8][temp u16 LE x10]
 PUBLISH_CHUNK     = 100      # max samples per MQTT message; mirrors BLE max payload — only batches >100 split
 NO_DATA_TIMEOUT_S = 6
+ADDR_WAIT_TIMEOUT_S = 10  # how long to wait for ThingsBoard's bleAddress before falling back to config
 
-_parsed   = urlparse(BROKER_URL)
-MQTT_HOST = _parsed.hostname or '103.116.39.179'
-MQTT_PORT = _parsed.port or 1883
+_parsed_primary  = urlparse(BROKER_URL)
+_parsed_fallback = urlparse(BROKER_URL_FALLBACK)
+MQTT_HOST_PRIMARY  = _parsed_primary.hostname or '103.116.39.179'
+MQTT_PORT_PRIMARY  = _parsed_primary.port or 1883
+MQTT_HOST_FALLBACK = _parsed_fallback.hostname or 'localhost'
+MQTT_PORT_FALLBACK = _parsed_fallback.port or 1883
+
+# Resolved at runtime by _select_broker(): old c7-2slab server first, localhost if unreachable
+MQTT_HOST    = MQTT_HOST_PRIMARY
+MQTT_PORT    = MQTT_PORT_PRIMARY
+MQTT_TOKEN   = ACCESS_TOKEN
+
+
+def _select_broker():
+    """Probe the primary (old c7-2slab) MQTT broker; fall back to localhost if unreachable."""
+    global MQTT_HOST, MQTT_PORT, MQTT_TOKEN
+    try:
+        with socket.create_connection((MQTT_HOST_PRIMARY, MQTT_PORT_PRIMARY), timeout=2.0):
+            MQTT_HOST, MQTT_PORT, MQTT_TOKEN = MQTT_HOST_PRIMARY, MQTT_PORT_PRIMARY, ACCESS_TOKEN
+            print(f'[MQTT] Using primary broker {MQTT_HOST}:{MQTT_PORT}')
+            return
+    except OSError:
+        pass
+    MQTT_HOST, MQTT_PORT, MQTT_TOKEN = MQTT_HOST_FALLBACK, MQTT_PORT_FALLBACK, ACCESS_TOKEN_FALLBACK
+    print(f'[MQTT] Primary broker {MQTT_HOST_PRIMARY}:{MQTT_PORT_PRIMARY} unreachable — '
+          f'falling back to {MQTT_HOST}:{MQTT_PORT}')
 
 MQTT_TOPIC      = 'v1/gateway/telemetry'
 ATTR_REQ_TOPIC  = 'v1/gateway/attributes/request'
@@ -136,6 +163,7 @@ class NodeState:
         self._addr        = ble_address.lower()
         self._addr_lock   = threading.Lock()
         self.addr_changed = threading.Event()
+        self.addr_ready   = threading.Event()  # set once server has supplied bleAddress (or wait times out)
         # One slot per command type: latest value always wins, no overflow possible.
         self._pending_cmds = {}            # cmd_byte -> payload bytes
         self._pending_lock = threading.Lock()
@@ -162,6 +190,7 @@ class NodeState:
                 print(f'[TB]  {self.name}: BLE address {self._addr} -> {addr}')
                 self._addr = addr
                 self.addr_changed.set()
+        self.addr_ready.set()
 
     def update_thresholds(self, updates: dict) -> bool:
         changed = False
@@ -471,9 +500,10 @@ def mqtt_on_disconnect(client, userdata, rc):
 
 def mqtt_setup():
     global mqtt
+    _select_broker()
     mqtt = mqtt_client.Client(client_id=f'gateway-{int(time.time())}',
                                protocol=mqtt_client.MQTTv311)
-    mqtt.username_pw_set(ACCESS_TOKEN, '')
+    mqtt.username_pw_set(MQTT_TOKEN, '')
     mqtt.on_connect    = mqtt_on_connect
     mqtt.on_disconnect = mqtt_on_disconnect
     mqtt.on_message    = mqtt_on_message
@@ -612,8 +642,9 @@ def node_worker(node: NodeState, adapter):
         nonlocal local_batch_count, last_rx_ts
         last_rx_ts = time.time()
         if len(data) == VITALS_SIZE:
-            # Vitals: 4 × float32 LE = 16 bytes: [ecgHr, ppgHr, spo2, temp]
-            ecg_hr, ppg_hr, spo2, temp = struct.unpack_from('<4f', data)
+            # Vitals: [hrEcg u8][hrPpg u8][spo2 u8][temp u16 LE x10] = 5 bytes
+            ecg_hr, ppg_hr, spo2, temp_x10 = struct.unpack_from('<3BH', data)
+            temp = temp_x10 / 10.0
             try:
                 publish_q.put_nowait(('vitals', node.name, (ecg_hr, ppg_hr, spo2, temp)))
             except queue.Full:
@@ -687,13 +718,26 @@ def main():
     print('=' * 49)
     print(f'  BLE ECG Gateway -> ThingsBoard  ({len(nodes)} node(s))')
     print('=' * 49)
-    print(f'Broker -> {MQTT_HOST}:{MQTT_PORT}')
     for n in nodes.values():
         print(f'  {n.name} -> {n.get_address()}')
     print()
 
     mqtt_setup()
     threading.Thread(target=publish_worker, daemon=True).start()
+
+    # Connect to the server first: wait for MQTT, then for each node's
+    # bleAddress attribute response/push, before touching the BLE adapter at
+    # all — the real BLE addresses live on ThingsBoard, not in local config.
+    print('[MQTT] Connecting to ThingsBoard before starting BLE...')
+    if mqtt_connected.wait(timeout=15):
+        print('[MQTT] Connected — fetching BLE addresses from server...')
+        for node in nodes.values():
+            if node.addr_ready.wait(timeout=ADDR_WAIT_TIMEOUT_S):
+                print(f'[BLE] {node.name}: address from server -> {node.get_address()}')
+            else:
+                print(f'[BLE] {node.name}: no server response — using configured address {node.get_address()}')
+    else:
+        print('[MQTT] Connection timeout — using configured BLE addresses')
 
     adapters = simplepyble.Adapter.get_adapters()
     if not adapters:

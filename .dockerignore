@@ -1,8 +1,0 @@
-.next
-node_modules
-.git
-.env.local
-.env*.local
-nginx
-scripts
-*.md
