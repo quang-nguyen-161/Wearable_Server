@@ -17,6 +17,7 @@ const STATUS_LABELS = {
   warning:   "WARNING",
   dangerous: "DANGEROUS",
   nodata:    "NO DATA",
+  offline:   "OFFLINE",
 };
 
 export default function VitalCard({
@@ -32,6 +33,7 @@ export default function VitalCard({
   dangerMin,
   dangerMax,
   loading = false,
+  offline = false,
   animDelay = 0,
   onSelect,
 }) {
@@ -50,11 +52,14 @@ export default function VitalCard({
   const _dangerMin = dangerMin ?? min   - (max - min) * 0.5;
   const _dangerMax = dangerMax ?? max   + (max - min) * 0.5;
 
-  // No reading available (param never reported) → neutral "NO DATA", never an alert.
-  const hasValue = displayValue !== null && displayValue !== undefined;
+  // Device offline → show "––" instead of the last received value.
+  const effectiveValue = offline ? null : displayValue;
+
+  // No reading available (param never reported, or device offline) → neutral status, never an alert.
+  const hasValue = effectiveValue !== null && effectiveValue !== undefined;
   const status = hasValue
-    ? getVitalStatus(displayValue, min, max, _warnMin, _warnMax, _dangerMin, _dangerMax)
-    : "nodata";
+    ? getVitalStatus(effectiveValue, min, max, _warnMin, _warnMax, _dangerMin, _dangerMax)
+    : (offline ? "offline" : "nodata");
 
   const isAlert = hasValue && status === "dangerous";
 
@@ -65,7 +70,7 @@ export default function VitalCard({
       onClick={() => onSelect && onSelect(label)}
       role="button"
       tabIndex={0}
-      aria-label={`${label}: ${displayValue ?? "loading"} ${unit}`}
+      aria-label={`${label}: ${effectiveValue ?? "loading"} ${unit}`}
     >
       <div className="card-header">
         <span className="card-icon">{icon}</span>
@@ -75,8 +80,8 @@ export default function VitalCard({
       <div className="card-label">{label}</div>
 
       <div className="card-value-row">
-        <span className={`card-value${loading && displayValue === null ? " loading" : ""}`}>
-          {loading && displayValue === null ? "––" : displayValue ?? "––"}
+        <span className={`card-value${loading && effectiveValue === null ? " loading" : ""}`}>
+          {loading && effectiveValue === null ? "––" : effectiveValue ?? "––"}
         </span>
         <span className="card-unit">{unit}</span>
       </div>

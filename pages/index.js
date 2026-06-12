@@ -1255,6 +1255,7 @@ export default function Dashboard() {
                     dangerMax={t?.dangerMax ?? v.dangerMax}
                     value={getValue(v.key)}
                     loading={!connected && !getValue(v.key)}
+                    offline={selectedDevice?.online === false}
                     animDelay={i * 60}
                   />
                 </div>
