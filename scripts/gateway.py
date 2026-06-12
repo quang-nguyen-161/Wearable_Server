@@ -106,6 +106,7 @@ CMD_ECG_CFG   = 0xCF   # ECG config:      [0xCF][fLo][fHi][iLo][iHi]            
 CMD_THR       = 0xCE   # vital thresholds:[0xCE][18×uint8 PPG/ECG/SpO2][6×uint16LE temp×10]  31 bytes
 CMD_PPG_CFG   = 0xCD   # PPG config:      [0xCD][fLo][fHi][redMa][irMa]           5 bytes
 CMD_VITAL_CFG = 0xCC   # Vital interval:  [0xCC][intervalLo][intervalHi]           3 bytes
+CMD_MODE_CFG  = 0xCB   # Mode config:     [0xCB][mode][periodSecLo][periodSecHi][capSecLo][capSecHi]  6 bytes
 
 THRESHOLD_KEYS = [
     'ppgHr_normalMin', 'ppgHr_normalMax', 'ppgHr_warnMin', 'ppgHr_warnMax', 'ppgHr_dangerMin', 'ppgHr_dangerMax',
@@ -118,8 +119,9 @@ TEMP_KEYS = frozenset(k for k in THRESHOLD_KEYS if k.startswith('temp_'))
 ECG_CFG_KEYS   = ['ecgSampleFreq', 'ecgPacketInterval']
 PPG_CFG_KEYS   = ['ppgSampleFreq', 'ppgRedLedMa', 'ppgIrLedMa']
 VITAL_CFG_KEYS = ['vitalInterval']
+MODE_CFG_KEYS  = ['deviceMode', 'periodicInterval', 'captureWindow']
 ALL_SHARED_KEYS = (['bleAddress'] + THRESHOLD_KEYS
-                   + ECG_CFG_KEYS + PPG_CFG_KEYS + VITAL_CFG_KEYS)
+                   + ECG_CFG_KEYS + PPG_CFG_KEYS + VITAL_CFG_KEYS + MODE_CFG_KEYS)
 
 _DEFAULT_THRESHOLDS = {
     'ppgHr_normalMin': 60,  'ppgHr_normalMax': 100,
@@ -152,6 +154,12 @@ _DEFAULT_VITAL_CFG = {
     'vitalInterval': 1000,
 }
 
+_DEFAULT_MODE_CFG = {
+    'deviceMode':       0,   # 0 CONTINUOUS / 1 PERIODIC / 2 ECG
+    'periodicInterval': 10,  # s — PERIODIC wake-to-wake interval (node clamps 5–60)
+    'captureWindow':    5,   # s — PERIODIC measurement window (node clamps 5…interval)
+}
+
 
 # ── Node state ────────────────────────────────────────────────────────
 
@@ -176,6 +184,8 @@ class NodeState:
         self._ppg_lock    = threading.Lock()
         self.vital_cfg    = dict(_DEFAULT_VITAL_CFG)
         self._vital_lock  = threading.Lock()
+        self.mode_cfg     = dict(_DEFAULT_MODE_CFG)
+        self._mode_lock   = threading.Lock()
 
     def get_address(self) -> str:
         with self._addr_lock:
@@ -338,6 +348,41 @@ class NodeState:
             with self._pending_lock:
                 self._pending_cmds[CMD_VITAL_CFG] = p
 
+    def update_mode_cfg(self, updates: dict) -> bool:
+        changed = False
+        with self._mode_lock:
+            for k, v in updates.items():
+                if k in self.mode_cfg:
+                    try:
+                        new = int(float(v))
+                        if new != self.mode_cfg[k]:
+                            self.mode_cfg[k] = new
+                            changed = True
+                    except (TypeError, ValueError):
+                        pass
+        return changed
+
+    def build_mode_cfg_payload(self) -> bytes | None:
+        """[CMD_MODE_CFG][mode][periodSec u16 LE][captureSec u16 LE] — 6 bytes."""
+        with self._mode_lock:
+            cfg = self.mode_cfg.copy()
+        try:
+            return struct.pack('<BBHH',
+                CMD_MODE_CFG,
+                cfg['deviceMode'] & 0xFF,
+                cfg['periodicInterval'],
+                cfg['captureWindow'],
+            )
+        except Exception as e:
+            print(f'[MOD] {self.name}: payload build error: {e}')
+            return None
+
+    def enqueue_mode_cfg(self):
+        p = self.build_mode_cfg_payload()
+        if p:
+            with self._pending_lock:
+                self._pending_cmds[CMD_MODE_CFG] = p
+
     def drain_pending(self) -> list:
         """Pop and return all pending (cmd_byte, payload) pairs. Thread-safe."""
         with self._pending_lock:
@@ -442,6 +487,9 @@ def mqtt_on_message(client, userdata, msg):
             elif key in VITAL_CFG_KEYS:
                 if node.update_vital_cfg({key: value}) and node.ble_connected:
                     node.enqueue_vital_cfg()
+            elif key in MODE_CFG_KEYS:
+                if node.update_mode_cfg({key: value}) and node.ble_connected:
+                    node.enqueue_mode_cfg()
 
         elif topic == ATTR_PUSH_TOPIC:
             # {"device": "Node1", "data": {"bleAddress": "..", "ppgHr_warnMin": 50, ...}}
@@ -475,6 +523,11 @@ def mqtt_on_message(client, userdata, msg):
             if vital_updates and node.update_vital_cfg(vital_updates):
                 node.enqueue_vital_cfg()
                 print(f'[TB]  {node_name}: vital config changed {vital_updates} -> CMD_VITAL_CFG queued')
+
+            mode_updates = {k: v for k, v in updates.items() if k in MODE_CFG_KEYS}
+            if mode_updates and node.update_mode_cfg(mode_updates):
+                node.enqueue_mode_cfg()
+                print(f'[TB]  {node_name}: mode config changed {mode_updates} -> CMD_MODE_CFG queued')
 
     except Exception as e:
         print(f'[MQTT] Message parse error: {e}')
@@ -617,6 +670,7 @@ _CMD_LABEL = {
     CMD_ECG_CFG:   'ECG config',
     CMD_PPG_CFG:   'PPG config',
     CMD_VITAL_CFG: 'vital config',
+    CMD_MODE_CFG:  'mode config',
 }
 
 
@@ -677,6 +731,7 @@ def node_worker(node: NodeState, adapter):
             node.enqueue_ecg_cfg()
             node.enqueue_ppg_cfg()
             node.enqueue_vital_cfg()
+            node.enqueue_mode_cfg()
 
             # Mark connected BEFORE draining so any ATTR_RESP that arrives
             # concurrently will also enqueue into _pending_cmds (deduped).

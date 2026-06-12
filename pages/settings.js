@@ -39,6 +39,16 @@ const DEFAULT_PPG_SAMPLE_FREQ     = 100;  // Hz — MAX30102 sample rate
 const DEFAULT_PPG_RED_LED_MA      = 6;    // mA — red LED drive current
 const DEFAULT_PPG_IR_LED_MA       = 6;    // mA — IR LED drive current
 
+const DEFAULT_DEVICE_MODE       = 0;  // 0 Continuous / 1 Periodic / 2 ECG
+const DEFAULT_PERIODIC_INTERVAL = 10; // s — wake-to-wake interval (5–60)
+const DEFAULT_CAPTURE_WINDOW    = 5;  // s — measurement window (5…interval)
+
+const DEVICE_MODE_OPTIONS = [
+  { value: 0, label: "Continuous" },
+  { value: 1, label: "Periodic" },
+  { value: 2, label: "ECG" },
+];
+
 const ECG_FREQ_PRESETS = [100, 250, 500, 750, 1000];
 const PPG_FREQ_OPTIONS = [50, 100, 200, 400, 800, 1000];
 
@@ -57,6 +67,9 @@ export default function Settings() {
   const [ppgSampleFreq,      setPpgSampleFreq]      = useState(DEFAULT_PPG_SAMPLE_FREQ);
   const [ppgRedLedMa,        setPpgRedLedMa]        = useState(DEFAULT_PPG_RED_LED_MA);
   const [ppgIrLedMa,         setPpgIrLedMa]         = useState(DEFAULT_PPG_IR_LED_MA);
+  const [deviceMode,         setDeviceMode]         = useState(DEFAULT_DEVICE_MODE);
+  const [periodicInterval,   setPeriodicInterval]   = useState(DEFAULT_PERIODIC_INTERVAL);
+  const [captureWindow,      setCaptureWindow]      = useState(DEFAULT_CAPTURE_WINDOW);
   const [loading,            setLoading]            = useState(false);
   const [saving,             setSaving]             = useState(false);
   const [saveMsg,            setSaveMsg]            = useState(null); // { type: "ok"|"err", text }
@@ -128,6 +141,9 @@ export default function Settings() {
       setPpgSampleFreq(a.ppgSampleFreq ?? DEFAULT_PPG_SAMPLE_FREQ);
       setPpgRedLedMa(a.ppgRedLedMa ?? DEFAULT_PPG_RED_LED_MA);
       setPpgIrLedMa(a.ppgIrLedMa ?? DEFAULT_PPG_IR_LED_MA);
+      setDeviceMode(a.deviceMode ?? DEFAULT_DEVICE_MODE);
+      setPeriodicInterval(a.periodicInterval ?? DEFAULT_PERIODIC_INTERVAL);
+      setCaptureWindow(a.captureWindow ?? DEFAULT_CAPTURE_WINDOW);
     } catch (e) {
       console.error("Load attributes:", e);
     } finally {
@@ -152,6 +168,7 @@ export default function Settings() {
       const sharedAttrs = {
         vitalInterval, ecgSampleFreq, ecgPacketInterval,
         ppgSampleFreq, ppgRedLedMa, ppgIrLedMa,
+        deviceMode, periodicInterval, captureWindow,
         ppgHr_normalMin: thresholds.ppgHeartRate.normalMin,
         ppgHr_normalMax: thresholds.ppgHeartRate.normalMax,
         ppgHr_warnMin:   thresholds.ppgHeartRate.warnMin,
@@ -178,7 +195,7 @@ export default function Settings() {
         temp_dangerMax:  thresholds.temperature.dangerMax,
       };
       await saveDeviceAttributes(token, selectedDeviceId, "SHARED_SCOPE", sharedAttrs);
-      updateSettings({ vitalInterval, ecgSampleFreq, ecgPacketInterval, ppgSampleFreq, ppgRedLedMa, ppgIrLedMa, thresholds });
+      updateSettings({ vitalInterval, ecgSampleFreq, ecgPacketInterval, ppgSampleFreq, ppgRedLedMa, ppgIrLedMa, deviceMode, periodicInterval, captureWindow, thresholds });
 
       setSaveMsg({ type: "ok", text: "Settings saved to ThingsBoard ✓" });
     } catch (e) {
@@ -198,6 +215,9 @@ export default function Settings() {
     setPpgSampleFreq(DEFAULT_PPG_SAMPLE_FREQ);
     setPpgRedLedMa(DEFAULT_PPG_RED_LED_MA);
     setPpgIrLedMa(DEFAULT_PPG_IR_LED_MA);
+    setDeviceMode(DEFAULT_DEVICE_MODE);
+    setPeriodicInterval(DEFAULT_PERIODIC_INTERVAL);
+    setCaptureWindow(DEFAULT_CAPTURE_WINDOW);
   };
 
   // ── Threshold field helper ─────────────────────────────────────────────
@@ -327,6 +347,71 @@ export default function Settings() {
                 </div>
               );
             })}
+          </section>
+
+          {/* ── Operating mode ── */}
+          <section className="settings-section">
+            <div className="section-title">OPERATING MODE</div>
+            <div className="section-sub">
+              Saved as Shared attributes. <strong>Continuous</strong> samples non-stop and reports on the vital interval. <strong>Periodic</strong> wakes every interval, measures for the capture window, sends one averaged vital, then sleeps. <strong>ECG</strong> streams the 250&nbsp;Hz waveform.
+            </div>
+            <div className="interval-presets">
+              {DEVICE_MODE_OPTIONS.map(opt => (
+                <button
+                  key={opt.value}
+                  className={`preset-btn ${deviceMode === opt.value ? "preset-btn--active" : ""}`}
+                  onClick={() => setDeviceMode(opt.value)}
+                >
+                  {opt.label}
+                </button>
+              ))}
+            </div>
+
+            {deviceMode === 1 && (
+              <>
+                {/* Periodic wake-to-wake interval */}
+                <div className="ecg-field-group">
+                  <div className="ecg-field-label">
+                    WAKE INTERVAL
+                    <span className="ecg-field-unit">s</span>
+                  </div>
+                  <div className="ecg-field-sub">How often the device wakes to take a measurement (5–60&nbsp;s).</div>
+                  <div className="interval-row">
+                    <input
+                      type="range"
+                      min={5} max={60} step={1}
+                      value={periodicInterval}
+                      onChange={e => {
+                        const v = Number(e.target.value);
+                        setPeriodicInterval(v);
+                        if (captureWindow > v) setCaptureWindow(v);
+                      }}
+                      className="interval-slider"
+                    />
+                    <span className="interval-value">{periodicInterval}s</span>
+                  </div>
+                </div>
+
+                {/* Periodic capture window */}
+                <div className="ecg-field-group">
+                  <div className="ecg-field-label">
+                    CAPTURE WINDOW
+                    <span className="ecg-field-unit">s</span>
+                  </div>
+                  <div className="ecg-field-sub">How long the device measures each time it wakes (5&nbsp;s … wake interval).</div>
+                  <div className="interval-row">
+                    <input
+                      type="range"
+                      min={5} max={Math.max(5, periodicInterval)} step={1}
+                      value={captureWindow}
+                      onChange={e => setCaptureWindow(Number(e.target.value))}
+                      className="interval-slider"
+                    />
+                    <span className="interval-value">{captureWindow}s</span>
+                  </div>
+                </div>
+              </>
+            )}
           </section>
 
           {/* ── Vital interval ── */}
