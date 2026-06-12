@@ -819,8 +819,10 @@ export default function Dashboard() {
       const modeMap = {};
       results.forEach((r, i) => {
         const v = r.status === "fulfilled" ? r.value : {};
-        ecgMap[list[i].id]  = v.showEcg    ?? true;
-        modeMap[list[i].id] = v.deviceMode ?? 1;
+        // showEcg may be numeric 1/0 (current) or legacy boolean; default on.
+        const se = v.showEcg;
+        ecgMap[list[i].id]  = (se === undefined || se === null) ? true : (se !== 0 && se !== false);
+        modeMap[list[i].id] = v.deviceMode ?? 0;
       });
       setEcgEnabledMap(ecgMap);
       setDeviceModeMap(modeMap);
@@ -837,16 +839,17 @@ export default function Dashboard() {
     const newVal = !currentlyEnabled;
     setEcgEnabledMap(prev => ({ ...prev, [deviceId]: newVal }));
     try {
-      await saveDeviceAttributes(tbAuthToken, deviceId, "SHARED_SCOPE", { showEcg: newVal });
+      // Stored numeric so the gateways' int parse works (firmware ECG stream flag)
+      await saveDeviceAttributes(tbAuthToken, deviceId, "SHARED_SCOPE", { showEcg: newVal ? 1 : 0 });
     } catch (e) {
       console.error("Failed to save showEcg:", e);
       setEcgEnabledMap(prev => ({ ...prev, [deviceId]: currentlyEnabled }));
     }
   }, [tbAuthToken]);
 
-  /* ── Set operating mode for a device (1=Continuous, 2=Periodic, 3=ECG) ── */
+  /* ── Set operating mode for a device (0=Continuous, 1=Periodic) ── */
   const handleSetDeviceMode = useCallback(async (deviceId, mode) => {
-    const prev = deviceModeMap[deviceId] ?? 1;
+    const prev = deviceModeMap[deviceId] ?? 0;
     setDeviceModeMap(p => ({ ...p, [deviceId]: mode }));
     try {
       await saveDeviceAttributes(tbAuthToken, deviceId, "SHARED_SCOPE", { deviceMode: mode });
@@ -1134,11 +1137,11 @@ export default function Dashboard() {
 
         {/* ── Device mode tabs ── */}
         {selectedDeviceId && (() => {
-          const mode = deviceModeMap[selectedDeviceId] ?? 1;
+          const mode = deviceModeMap[selectedDeviceId] ?? 0;
+          const ecgOn = ecgEnabledMap[selectedDeviceId] !== false;
           const MODES = [
-            { id: 1, icon: "⚡", label: "Continuous",  desc: "Real-time full data stream" },
-            { id: 2, icon: "⏱",  label: "Periodic",    desc: "Reports at the vital interval" },
-            { id: 3, icon: "💓", label: "ECG Mode",     desc: "Dedicated ECG capture" },
+            { id: 0, icon: "⚡", label: "Continuous",  desc: "Real-time full data stream" },
+            { id: 1, icon: "⏱",  label: "Periodic",    desc: "Reports at the vital interval" },
           ];
           const intervalLabel = settings.vitalInterval >= 1000
             ? `${settings.vitalInterval / 1000}s`
@@ -1158,8 +1161,17 @@ export default function Dashboard() {
                     <span className="mode-label">{m.label}</span>
                   </button>
                 ))}
+                {/* ECG is an independent flag, selectable alongside the base mode */}
+                <button
+                  className={`device-mode-tab${ecgOn ? " device-mode-tab--active" : ""}`}
+                  onClick={() => handleToggleEcg(selectedDeviceId, ecgOn)}
+                  title="Stream the ECG waveform alongside vitals — toggle off to stop ECG batches and hide the graph"
+                >
+                  <span className="mode-icon">💓</span>
+                  <span className="mode-label">ECG {ecgOn ? "ON" : "OFF"}</span>
+                </button>
               </div>
-              {mode === 2 && (
+              {mode === 1 && (
                 <div className="device-mode-hint">
                   Interval: <strong>{intervalLabel}</strong>
                   &nbsp;·&nbsp;
@@ -1248,33 +1260,6 @@ export default function Dashboard() {
                 </div>
               );
             })}
-
-          {/* ECG controls row — ON/OFF toggle */}
-          {selectedDeviceId && (
-            <div style={{ display: "flex", alignItems: "center", gap: 10, padding: "0 2px 2px", justifyContent: "flex-end" }}>
-              <button
-                onClick={() => handleToggleEcg(selectedDeviceId, ecgEnabledMap[selectedDeviceId] !== false)}
-                style={{
-                  display: "flex", alignItems: "center", gap: 6,
-                  padding: "5px 12px", borderRadius: 8,
-                  border: `1px solid ${ecgEnabledMap[selectedDeviceId] !== false ? "rgba(112,173,71,0.4)" : "rgba(148,163,184,0.3)"}`,
-                  background: ecgEnabledMap[selectedDeviceId] !== false ? "rgba(112,173,71,0.08)" : "rgba(148,163,184,0.08)",
-                  color: ecgEnabledMap[selectedDeviceId] !== false ? "#70AD47" : "#94a3b8",
-                  cursor: "pointer", fontSize: 11, fontWeight: 700,
-                  letterSpacing: "0.06em", fontFamily: "inherit", transition: "all 0.15s",
-                }}
-              >
-                ECG GRAPH
-                <span style={{
-                  padding: "1px 7px", borderRadius: 4, fontSize: 10,
-                  background: ecgEnabledMap[selectedDeviceId] !== false ? "rgba(112,173,71,0.15)" : "rgba(148,163,184,0.15)",
-                }}>
-                  {ecgEnabledMap[selectedDeviceId] !== false ? "ON" : "OFF"}
-                </span>
-                <span style={{ fontSize: 9, opacity: 0.6 }}>▾</span>
-              </button>
-            </div>
-          )}
 
           {/* ECG Signal — live HTTPS waveform, each sample timestamped */}
           {selectedDeviceId && ecgEnabledMap[selectedDeviceId] !== false && (

@@ -26,6 +26,7 @@ import time
 import queue
 import threading
 from urllib.parse import urlparse
+import urllib.request
 
 import simplepyble
 import paho.mqtt.client as mqtt_client
@@ -48,8 +49,13 @@ def load_env(path):
     except FileNotFoundError:
         pass
 
-load_env('.env.local')
-load_env('../.env.local')
+# Resolve env files relative to this script's own directory, so it works no
+# matter where the gateway is launched from (e.g. Code Runner / Ctrl+Alt+N
+# launches from the workspace root, not scripts/). The shared config lives in
+# health-monitor/.env.local (one level up); scripts/.env.local is optional.
+_HERE = os.path.dirname(os.path.abspath(__file__))
+load_env(os.path.join(_HERE, '.env.local'))
+load_env(os.path.join(_HERE, '..', '.env.local'))
 
 # ── Config ────────────────────────────────────────────────────────────
 BROKER_URL          = os.environ.get('TB_MQTT_BROKER', 'mqtt://103.116.39.179:1883')
@@ -59,6 +65,15 @@ ACCESS_TOKEN_FALLBACK = os.environ.get('TB_GATEWAY_ACCESS_TOKEN_FALLBACK', ACCES
 NODE_LIST_ENV = os.environ.get('NODE_LIST', '')          # "Node1:e5:..,Node2:aa:.."
 TB_NODE_NAME  = os.environ.get('TB_NODE_NAME', 'Node1')  # legacy single-node
 BLE_ADDRESS   = os.environ.get('BLE_ADDRESS',  'e5:39:e6:e4:d1:e8')
+
+# REST API discovery — finds devices whose name contains "node" (case-insensitive),
+# same convention as pages/api/devices.js, so nodes added via the dashboard's
+# "+ Node" button are picked up automatically without editing NODE_LIST.
+TB_REST_URL_PRIMARY  = os.environ.get('TB_REST_URL_PRIMARY', 'https://c7.hust-2slab.org')
+TB_REST_URL_FALLBACK = os.environ.get('TB_REST_URL_FALLBACK', os.environ.get('TB_BASE_URL', 'http://localhost:9090'))
+TB_USERNAME  = os.environ.get('TB_USERNAME', 'tenant@thingsboard.org')
+TB_PASSWORD  = os.environ.get('TB_PASSWORD', 'tenant')
+TB_DEVICE_ID = os.environ.get('TB_DEVICE_ID', '')  # gateway's own device id — excluded from discovery
 
 SERVICE_UUID        = "6e401400-b5a3-f393-e0a9-e50e24dcca9e"
 CHARACTERISTIC_UUID = "6e401401-b5a3-f393-e0a9-e50e24dcca9e"
@@ -81,19 +96,22 @@ MQTT_PORT_FALLBACK = _parsed_fallback.port or 1883
 MQTT_HOST    = MQTT_HOST_PRIMARY
 MQTT_PORT    = MQTT_PORT_PRIMARY
 MQTT_TOKEN   = ACCESS_TOKEN
+TB_REST_URL  = TB_REST_URL_PRIMARY
 
 
 def _select_broker():
     """Probe the primary (old c7-2slab) MQTT broker; fall back to localhost if unreachable."""
-    global MQTT_HOST, MQTT_PORT, MQTT_TOKEN
+    global MQTT_HOST, MQTT_PORT, MQTT_TOKEN, TB_REST_URL
     try:
         with socket.create_connection((MQTT_HOST_PRIMARY, MQTT_PORT_PRIMARY), timeout=2.0):
             MQTT_HOST, MQTT_PORT, MQTT_TOKEN = MQTT_HOST_PRIMARY, MQTT_PORT_PRIMARY, ACCESS_TOKEN
+            TB_REST_URL = TB_REST_URL_PRIMARY
             print(f'[MQTT] Using primary broker {MQTT_HOST}:{MQTT_PORT}')
             return
     except OSError:
         pass
     MQTT_HOST, MQTT_PORT, MQTT_TOKEN = MQTT_HOST_FALLBACK, MQTT_PORT_FALLBACK, ACCESS_TOKEN_FALLBACK
+    TB_REST_URL = TB_REST_URL_FALLBACK
     print(f'[MQTT] Primary broker {MQTT_HOST_PRIMARY}:{MQTT_PORT_PRIMARY} unreachable — '
           f'falling back to {MQTT_HOST}:{MQTT_PORT}')
 
@@ -106,7 +124,7 @@ CMD_ECG_CFG   = 0xCF   # ECG config:      [0xCF][fLo][fHi][iLo][iHi]            
 CMD_THR       = 0xCE   # vital thresholds:[0xCE][18×uint8 PPG/ECG/SpO2][6×uint16LE temp×10]  31 bytes
 CMD_PPG_CFG   = 0xCD   # PPG config:      [0xCD][fLo][fHi][redMa][irMa]           5 bytes
 CMD_VITAL_CFG = 0xCC   # Vital interval:  [0xCC][intervalLo][intervalHi]           3 bytes
-CMD_MODE_CFG  = 0xCB   # Mode config:     [0xCB][mode][periodSecLo][periodSecHi][capSecLo][capSecHi]  6 bytes
+CMD_MODE_CFG  = 0xCB   # Mode config:     [0xCB][mode][periodSecLo][periodSecHi][capSecLo][capSecHi][ecgEnabled]  7 bytes
 
 THRESHOLD_KEYS = [
     'ppgHr_normalMin', 'ppgHr_normalMax', 'ppgHr_warnMin', 'ppgHr_warnMax', 'ppgHr_dangerMin', 'ppgHr_dangerMax',
@@ -119,7 +137,7 @@ TEMP_KEYS = frozenset(k for k in THRESHOLD_KEYS if k.startswith('temp_'))
 ECG_CFG_KEYS   = ['ecgSampleFreq', 'ecgPacketInterval']
 PPG_CFG_KEYS   = ['ppgSampleFreq', 'ppgRedLedMa', 'ppgIrLedMa']
 VITAL_CFG_KEYS = ['vitalInterval']
-MODE_CFG_KEYS  = ['deviceMode', 'periodicInterval', 'captureWindow']
+MODE_CFG_KEYS  = ['deviceMode', 'periodicInterval', 'captureWindow', 'showEcg']
 ALL_SHARED_KEYS = (['bleAddress'] + THRESHOLD_KEYS
                    + ECG_CFG_KEYS + PPG_CFG_KEYS + VITAL_CFG_KEYS + MODE_CFG_KEYS)
 
@@ -158,6 +176,7 @@ _DEFAULT_MODE_CFG = {
     'deviceMode':       0,   # 0 CONTINUOUS / 1 PERIODIC / 2 ECG
     'periodicInterval': 10,  # s — PERIODIC wake-to-wake interval (node clamps 5–60)
     'captureWindow':    5,   # s — PERIODIC measurement window (node clamps 5…interval)
+    'showEcg':          1,   # 1 = stream ECG batches alongside vitals, 0 = no ECG batches
 }
 
 
@@ -363,15 +382,16 @@ class NodeState:
         return changed
 
     def build_mode_cfg_payload(self) -> bytes | None:
-        """[CMD_MODE_CFG][mode][periodSec u16 LE][captureSec u16 LE] — 6 bytes."""
+        """[CMD_MODE_CFG][mode][periodSec u16 LE][captureSec u16 LE][ecgEnabled] — 7 bytes."""
         with self._mode_lock:
             cfg = self.mode_cfg.copy()
         try:
-            return struct.pack('<BBHH',
+            return struct.pack('<BBHHB',
                 CMD_MODE_CFG,
                 cfg['deviceMode'] & 0xFF,
                 cfg['periodicInterval'],
                 cfg['captureWindow'],
+                1 if cfg['showEcg'] else 0,
             )
         except Exception as e:
             print(f'[MOD] {self.name}: payload build error: {e}')
@@ -391,8 +411,48 @@ class NodeState:
         return cmds
 
 
+def _discover_node_names() -> list[str]:
+    """Query ThingsBoard for tenant devices whose name contains "node"
+    (case-insensitive) — same convention as pages/api/devices.js. Lets nodes
+    created via the dashboard's "+ Node" button be picked up automatically.
+    Returns [] on any failure (best-effort; NODE_LIST / legacy config still apply).
+    """
+    try:
+        # The c7-2slab reverse proxy 403s requests with the default
+        # "Python-urllib" User-Agent — send a browser-like one.
+        login_req = urllib.request.Request(
+            f'{TB_REST_URL}/api/auth/login',
+            data=json.dumps({'username': TB_USERNAME, 'password': TB_PASSWORD}).encode(),
+            method='POST',
+            headers={'Content-Type': 'application/json', 'User-Agent': 'Mozilla/5.0'},
+        )
+        with urllib.request.urlopen(login_req, timeout=8) as resp:
+            token = json.loads(resp.read())['token']
+
+        devices_req = urllib.request.Request(
+            f'{TB_REST_URL}/api/tenant/devices?pageSize=100&page=0',
+            headers={'X-Authorization': f'Bearer {token}', 'User-Agent': 'Mozilla/5.0'},
+        )
+        with urllib.request.urlopen(devices_req, timeout=8) as resp:
+            data = json.loads(resp.read())
+
+        names = []
+        for d in data.get('data', []):
+            if TB_DEVICE_ID and d.get('id', {}).get('id') == TB_DEVICE_ID:
+                continue
+            name = d.get('name', '')
+            if 'node' in name.lower():
+                names.append(name)
+        return names
+    except Exception as e:
+        print(f'[TB]  Node discovery via {TB_REST_URL} failed: {e}')
+        return []
+
+
 def _parse_node_list() -> dict[str, NodeState]:
-    """Build {name: NodeState} from NODE_LIST env or legacy single-node vars."""
+    """Build {name: NodeState} from NODE_LIST env / legacy single-node vars,
+    plus any "node" devices discovered on ThingsBoard that aren't listed yet.
+    """
     nodes: dict[str, NodeState] = {}
     if NODE_LIST_ENV:
         for entry in NODE_LIST_ENV.split(','):
@@ -405,6 +465,12 @@ def _parse_node_list() -> dict[str, NodeState]:
             addr = entry[sep + 1:].strip()
             if name and addr:
                 nodes[name] = NodeState(name, addr)
+
+    for name in _discover_node_names():
+        if name not in nodes:
+            nodes[name] = NodeState(name, '00:00:00:00:00:00')
+            print(f'[TB]  Discovered node from dashboard: {name}')
+
     if not nodes:
         nodes[TB_NODE_NAME] = NodeState(TB_NODE_NAME, BLE_ADDRESS)
     return nodes
@@ -426,9 +492,32 @@ nodes: dict[str, NodeState] = {}
 
 
 def _connect_all_devices(client):
+    """Register every node's session with the TB gateway so attribute
+    request/response routing (bleAddress, thresholds, ...) works — this has
+    to happen before BLE ever connects. Immediately follow with 'disconnect'
+    for any node whose BLE link isn't up yet, so TB doesn't report it as
+    active/online until the gateway actually connects to it over BLE.
+    """
     for node_name in nodes:
         client.publish('v1/gateway/connect', json.dumps({"device": node_name, "type": "default"}))
     print(f'[TB]  Announced connect for {len(nodes)} node(s): {list(nodes)}')
+    for node_name, node in nodes.items():
+        if not node.ble_connected:
+            client.publish('v1/gateway/disconnect', json.dumps({"device": node_name}))
+
+
+def _announce_ble_connect(node_name: str):
+    """Mark a node active in ThingsBoard once its BLE link is actually up."""
+    if mqtt_connected.is_set():
+        mqtt.publish('v1/gateway/connect', json.dumps({"device": node_name, "type": "default"}))
+        print(f'[TB]  {node_name}: connect announced (active)')
+
+
+def _announce_ble_disconnect(node_name: str):
+    """Mark a node inactive in ThingsBoard once its BLE link drops."""
+    if mqtt_connected.is_set():
+        mqtt.publish('v1/gateway/disconnect', json.dumps({"device": node_name}))
+        print(f'[TB]  {node_name}: disconnect announced (inactive)')
 
 
 def _request_all_attrs(client):
@@ -553,7 +642,6 @@ def mqtt_on_disconnect(client, userdata, rc):
 
 def mqtt_setup():
     global mqtt
-    _select_broker()
     mqtt = mqtt_client.Client(client_id=f'gateway-{int(time.time())}',
                                protocol=mqtt_client.MQTTv311)
     mqtt.username_pw_set(MQTT_TOKEN, '')
@@ -598,21 +686,21 @@ def publish_worker():
 
         elif pkt_type == 'vitals':
             _, node_name, (ecg_hr, ppg_hr, spo2, temp) = item
-            # hr and spo2 come from uint8_t fields in firmware — publish as integers
-            payload = {
-                node_name: [{
-                    'ts':     ts,
-                    'values': {
-                        'ecgHeartRate': int(round(ecg_hr)),
-                        'ppgHeartRate': int(round(ppg_hr)),
-                        'spo2':         int(round(spo2)),
-                        'temperature':  round(temp, 1),
-                    },
-                }]
-            }
+            # 0 = sensor absent / reading not ready (firmware validity flag) →
+            # omit the key so ThingsBoard never stores it and the dashboard shows "__".
+            # hr and spo2 come from uint8_t fields in firmware — publish as integers.
+            values = {}
+            if ecg_hr > 0: values['ecgHeartRate'] = int(round(ecg_hr))
+            if ppg_hr > 0: values['ppgHeartRate'] = int(round(ppg_hr))
+            if spo2   > 0: values['spo2']         = int(round(spo2))
+            if temp   > 0: values['temperature']  = round(temp, 1)
+            if not values:
+                publish_q.task_done()
+                continue
+            payload = { node_name: [{ 'ts': ts, 'values': values }] }
             if mqtt_connected.is_set():
                 mqtt.publish(MQTT_TOPIC, json.dumps(payload), qos=0)
-                print(f'[MQTT] {node_name} vitals ECG-HR:{int(round(ecg_hr))} PPG-HR:{int(round(ppg_hr))} SpO2:{int(round(spo2))} Temp:{temp:.1f}')
+                print(f'[MQTT] {node_name} vitals {values}')
             else:
                 print(f'[MQTT] Not connected — dropping {node_name} vitals')
 
@@ -621,13 +709,45 @@ def publish_worker():
 
 # ── BLE helpers ───────────────────────────────────────────────────────
 
-_scan_lock = threading.Lock()   # only one thread may call adapter.scan_for() at a time
+_scan_lock      = threading.Lock()   # only one thread may call adapter.scan_for() at a time
+_scan_cache     = {}                 # address(lower) -> peripheral, from the last scan
+_scan_cache_ts  = 0.0                # monotonic-ish wall time of the last scan
+SCAN_CACHE_TTL_S = 5.0               # reuse a scan this fresh instead of re-scanning
 
 
 def wait_for_bluetooth():
     while not simplepyble.Adapter.bluetooth_enabled():
         print('[BLE] Bluetooth not enabled — waiting...')
         time.sleep(5)
+
+
+def _find_peripheral(adapter, target: str):
+    """Return the peripheral whose address matches `target`, or None.
+
+    A single scan discovers *all* nearby nodes at once and caches them by
+    address. Concurrent node workers share that one scan: whoever scans first
+    populates the cache, and every other node looks up its own address in the
+    same results instead of running its own redundant scan. This is what lets a
+    newly added node (e.g. Node4) be found from the same sweep as Node1.
+
+    Offline nodes keep getting scanned too — a node can only come online *after*
+    the gateway connects, so an absent address just isn't in the cache yet. Once
+    the cache goes stale (TTL) the next worker triggers a fresh sweep, which
+    again covers every node in range, online or not.
+    """
+    global _scan_cache, _scan_cache_ts
+    target = target.lower()
+    with _scan_lock:
+        # Trust a recent sweep for *every* node, present or not: it already
+        # covered all devices in range, so an offline node is simply absent.
+        # Re-scan only once the cache goes stale, so multiple offline workers
+        # share one sweep instead of each running its own back-to-back scan.
+        if (time.time() - _scan_cache_ts) < SCAN_CACHE_TTL_S:
+            return _scan_cache.get(target)
+        adapter.scan_for(3000)
+        _scan_cache = {p.address().lower(): p for p in adapter.scan_get_results()}
+        _scan_cache_ts = time.time()
+        return _scan_cache.get(target)
 
 
 def ble_connect_node(adapter, node: NodeState):
@@ -637,29 +757,27 @@ def ble_connect_node(adapter, node: NodeState):
             node.addr_changed.clear()
         target = node.get_address()
         print(f'[BLE] {node.name}: scanning for {target}...')
-        with _scan_lock:
-            adapter.scan_for(3000)
-            results = adapter.scan_get_results()
-        for p in results:
-            if p.address().lower() == target.lower():
-                print(f'[BLE] {node.name}: found [{p.address()}] - connecting')
-                p.connect()
-                # Windows BLE (WinRT) discovers GATT services asynchronously
-                # after connect() returns; calling notify()/write too soon
-                # throws E_ILLEGAL_METHOD_CALL or "Service ... not found".
-                # Poll until our service actually shows up instead of a fixed
-                # guess-delay — much more robust against slow discovery.
-                for _ in range(20):  # up to ~10 s
-                    try:
-                        if any(s.uuid().lower() == SERVICE_UUID.lower()
-                               for s in p.services()):
-                            return p
-                    except Exception:
-                        pass
-                    time.sleep(0.5)
-                print(f'[BLE] {node.name}: service not discovered after connect — disconnecting')
-                p.disconnect()
-        print(f'[BLE] {node.name}: not found, retrying...')
+        p = _find_peripheral(adapter, target)
+        if p is not None:
+            print(f'[BLE] {node.name}: found [{p.address()}] - connecting')
+            p.connect()
+            # Windows BLE (WinRT) discovers GATT services asynchronously
+            # after connect() returns; calling notify()/write too soon
+            # throws E_ILLEGAL_METHOD_CALL or "Service ... not found".
+            # Poll until our service actually shows up instead of a fixed
+            # guess-delay — much more robust against slow discovery.
+            for _ in range(20):  # up to ~10 s
+                try:
+                    if any(s.uuid().lower() == SERVICE_UUID.lower()
+                           for s in p.services()):
+                        return p
+                except Exception:
+                    pass
+                time.sleep(0.5)
+            print(f'[BLE] {node.name}: service not discovered after connect — disconnecting')
+            p.disconnect()
+        else:
+            print(f'[BLE] {node.name}: not found, retrying...')
         time.sleep(1)
 
 
@@ -736,6 +854,7 @@ def node_worker(node: NodeState, adapter):
             # Mark connected BEFORE draining so any ATTR_RESP that arrives
             # concurrently will also enqueue into _pending_cmds (deduped).
             node.ble_connected = True
+            _announce_ble_connect(node.name)
             _ble_write_pending(node, peripheral)
 
             while True:
@@ -750,13 +869,17 @@ def node_worker(node: NodeState, adapter):
                     break
 
         except KeyboardInterrupt:
-            node.ble_connected = False
+            if node.ble_connected:
+                node.ble_connected = False
+                _announce_ble_disconnect(node.name)
             raise
         except Exception as e:
             print(f'[BLE] {node.name}: {e} — retry in 5s')
             time.sleep(5)
         finally:
-            node.ble_connected = False
+            if node.ble_connected:
+                node.ble_connected = False
+                _announce_ble_disconnect(node.name)
 
 
 # ── Main ──────────────────────────────────────────────────────────────
@@ -768,6 +891,7 @@ def main():
         print('ERROR: TB_GATEWAY_ACCESS_TOKEN must be set in .env.local')
         return
 
+    _select_broker()  # also picks the matching REST URL for node discovery below
     nodes = _parse_node_list()
 
     print('=' * 49)

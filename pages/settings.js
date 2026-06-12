@@ -39,14 +39,13 @@ const DEFAULT_PPG_SAMPLE_FREQ     = 100;  // Hz — MAX30102 sample rate
 const DEFAULT_PPG_RED_LED_MA      = 6;    // mA — red LED drive current
 const DEFAULT_PPG_IR_LED_MA       = 6;    // mA — IR LED drive current
 
-const DEFAULT_DEVICE_MODE       = 0;  // 0 Continuous / 1 Periodic / 2 ECG
+const DEFAULT_DEVICE_MODE       = 0;  // 0 Continuous / 1 Periodic  (ECG is a separate flag, toggled on the dashboard)
 const DEFAULT_PERIODIC_INTERVAL = 10; // s — wake-to-wake interval (5–60)
 const DEFAULT_CAPTURE_WINDOW    = 5;  // s — measurement window (5…interval)
 
 const DEVICE_MODE_OPTIONS = [
   { value: 0, label: "Continuous" },
   { value: 1, label: "Periodic" },
-  { value: 2, label: "ECG" },
 ];
 
 const ECG_FREQ_PRESETS = [100, 250, 500, 750, 1000];

@@ -16,6 +16,7 @@ const STATUS_LABELS = {
   normal:    "NORMAL",
   warning:   "WARNING",
   dangerous: "DANGEROUS",
+  nodata:    "NO DATA",
 };
 
 export default function VitalCard({
@@ -48,9 +49,14 @@ export default function VitalCard({
   const _warnMax   = warnMax   ?? max   + (max - min) * 0.25;
   const _dangerMin = dangerMin ?? min   - (max - min) * 0.5;
   const _dangerMax = dangerMax ?? max   + (max - min) * 0.5;
-  const status = getVitalStatus(displayValue, min, max, _warnMin, _warnMax, _dangerMin, _dangerMax);
 
-  const isAlert = status === "dangerous";
+  // No reading available (param never reported) → neutral "NO DATA", never an alert.
+  const hasValue = displayValue !== null && displayValue !== undefined;
+  const status = hasValue
+    ? getVitalStatus(displayValue, min, max, _warnMin, _warnMax, _dangerMin, _dangerMax)
+    : "nodata";
+
+  const isAlert = hasValue && status === "dangerous";
 
   return (
     <div
