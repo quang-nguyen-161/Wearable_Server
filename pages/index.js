@@ -798,12 +798,13 @@ export default function Dashboard() {
     const spo2  = vitals?.spo2?.value;
     const temp  = vitals?.temperature?.value;
     const hasAlert =
-      (ppgHr != null && (ppgHr < thresholds.ppgHeartRate.dangerMin || ppgHr > thresholds.ppgHeartRate.dangerMax)) ||
+      selectedDevice?.online !== false &&
+      ((ppgHr != null && (ppgHr < thresholds.ppgHeartRate.dangerMin || ppgHr > thresholds.ppgHeartRate.dangerMax)) ||
       (ecgHr != null && (ecgHr < thresholds.ecgHeartRate.dangerMin || ecgHr > thresholds.ecgHeartRate.dangerMax)) ||
       (spo2  != null && (spo2  < thresholds.spo2.dangerMin         || spo2  > thresholds.spo2.dangerMax))         ||
-      (temp  != null && (temp  < thresholds.temperature.dangerMin  || temp  > thresholds.temperature.dangerMax));
+      (temp  != null && (temp  < thresholds.temperature.dangerMin  || temp  > thresholds.temperature.dangerMax)));
     setDeviceAlerts((prev) => ({ ...prev, [selectedDeviceId]: hasAlert }));
-  }, [vitals, selectedDeviceId, settings]);
+  }, [vitals, selectedDeviceId, settings, selectedDevice]);
 
   /* ── Fetch device list ── */
   const fetchDevices = useCallback(async () => {
