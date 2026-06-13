@@ -581,6 +581,18 @@ _attrs_requested       = set()  # node names already pulled once (avoid re-burst
 nodes: dict[str, NodeState] = {}
 
 
+def _publish_connected_attr(client, node_name: str, connected: bool):
+    """Push our own 'connected' CLIENT_SCOPE attribute for this node.
+
+    TB's built-in active/lastConnectTime/lastDisconnectTime tracking for
+    gateway sub-devices is unreliable (active can stay stuck true, and
+    connect/disconnect timestamps can arrive out of order). This attribute
+    is the single source of truth for whether the gateway currently has a
+    live BLE link to the node — the dashboard should key off this instead.
+    """
+    client.publish(ATTR_PUSH_TOPIC, json.dumps({"device": node_name, "data": {"connected": connected}}))
+
+
 def _connect_all_devices(client):
     """Register every node's session with the TB gateway so attribute
     request/response routing (bleAddress, thresholds, ...) works — this has
@@ -594,12 +606,14 @@ def _connect_all_devices(client):
     for node_name, node in nodes.items():
         if not node.ble_connected:
             client.publish('v1/gateway/disconnect', json.dumps({"device": node_name}))
+        _publish_connected_attr(client, node_name, node.ble_connected)
 
 
 def _announce_ble_connect(node_name: str):
     """Mark a node active in ThingsBoard once its BLE link is actually up."""
     if mqtt_connected.is_set():
         mqtt.publish('v1/gateway/connect', json.dumps({"device": node_name, "type": "default"}))
+        _publish_connected_attr(mqtt, node_name, True)
         print(f'[TB]  {node_name}: connect announced (active)')
 
 
@@ -607,6 +621,7 @@ def _announce_ble_disconnect(node_name: str):
     """Mark a node inactive in ThingsBoard once its BLE link drops."""
     if mqtt_connected.is_set():
         mqtt.publish('v1/gateway/disconnect', json.dumps({"device": node_name}))
+        _publish_connected_attr(mqtt, node_name, False)
         print(f'[TB]  {node_name}: disconnect announced (inactive)')
 
 

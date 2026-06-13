@@ -50,38 +50,30 @@ export default async function handler(req, res) {
       d.name.toLowerCase().includes("node")
     );
 
-    // ── 2. Check device activity via TB SERVER_SCOPE attributes ────────
-    // The gateway sends 'v1/gateway/connect' when a node's BLE link comes up
-    // and 'v1/gateway/disconnect' when it drops. TB stamps each with its own
-    // server-side timestamp in lastConnectTime / lastDisconnectTime. Whichever
-    // happened most recently (by TB's clock) tells us the current state —
-    // no need to trust the 'active'/lastActivityTime fields, which TB derives
-    // from its own device-state heuristics and can lag behind gateway events.
+    // ── 2. Check device activity via the gateway's own 'connected' attr ─
+    // TB's built-in active/lastConnectTime/lastDisconnectTime tracking for
+    // gateway sub-devices is unreliable (active can stay stuck true, and
+    // connect/disconnect timestamps can arrive out of order). The gateway
+    // instead pushes its own 'connected' CLIENT_SCOPE attribute reflecting
+    // the real BLE link state — use that directly, defaulting to offline.
 
     const devicesWithStatus = await Promise.all(
       nodeDevices.map(async (device) => {
         try {
           const attrs = await tbGet(
-            `/api/plugins/telemetry/DEVICE/${device.id}/values/attributes/SERVER_SCOPE`,
-            { keys: "lastConnectTime,lastDisconnectTime,patientName" }
+            `/api/plugins/telemetry/DEVICE/${device.id}/values/attributes`,
+            { keys: "connected,patientName" }
           );
 
           // TB returns array: [{ key, value, lastUpdateTs }]
           const map = {};
           for (const item of attrs || []) map[item.key] = item.value;
 
-          const lastConnectTime    = map.lastConnectTime    || null;
-          const lastDisconnectTime = map.lastDisconnectTime || null;
-          const online = lastConnectTime != null &&
-            (lastDisconnectTime == null || lastConnectTime > lastDisconnectTime);
-
           return {
             ...device,
             patientName:         map.patientName || null,
             displayName:         map.patientName || device.name,
-            online,
-            lastConnectTime,
-            lastDisconnectTime,
+            online:              map.connected === true || map.connected === "true",
           };
         } catch (_) {
           return { ...device, online: false };
