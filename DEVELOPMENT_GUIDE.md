@@ -668,6 +668,11 @@ const [, setSignalData] = useState([]);
 </div>
 ```
 
+**Vital History Modal x-axis (`components/VitalHistoryModal.js`):**
+The `LineChart` inside the "X History" modal adapts its x-axis tick count/format to the selected time window (`windowMs = maxT - minT`):
+- `windowMs <= 60_000` (the "1 min" preset) → `xCount = 6` ticks (~10s apart); otherwise `xCount = 10`.
+- `windowMs <= 5 * 60_000` → tick labels include seconds (`fmtShort(t, true)` → `HH:MM:SS`) so short-window ticks aren't all-identical minute labels; longer windows show `HH:MM` only.
+
 ---
 
 ### T - Theme System
@@ -771,6 +776,9 @@ useEffect(() => {
 **Percentage bar:**
 - Shows position within critical range
 - Animated fill based on value
+
+**Alert debounce (consecutive-reading streak):**
+A single out-of-range reading no longer flips the badge. `VitalCard` tracks a `streak` of consecutive `warning`/`dangerous` `rawStatus` values; the displayed `status` (and thus the `ALERT` badge / `isAlert`) only escalates to `warning`/`dangerous` once the same status has occurred for `REQUIRED_STREAK = 5` consecutive updates in a row. Any `normal`/`nodata`/`offline` reading resets the streak and de-escalates immediately (no debounce on recovery). This prevents a single noisy/outlier sample (e.g. a momentary PPG spike) from triggering the ALERT badge or the Overview grid's blinking ALERT badge.
 
 ---
 
@@ -1170,11 +1178,15 @@ timestamp_ms,datetime,ppgHeartRate,ecgHeartRate,spo2,temperature
 
 ## Multi-Node Overview Grid (`components/OverviewGrid.js`)
 
-Rendered above the main dashboard. Shows one card per device with:
+Rendered above the main dashboard, and reused inside the "Overview" modal (`OverviewModal` in `pages/index.js`). Shows one card per device with:
 - Online/offline badge
 - HR / SpO₂ / Temperature mini-tiles with color-coded status dots
 - Blinking **ALERT** badge and red border when any vital is in critical range
-- Click to select a node (updates `selectedDeviceId` in parent)
+- Click to select a node (calls `onSelectDevice(deviceId)`, which sets `selectedDeviceId` in the parent so the main dashboard reflects that node)
+
+**Offline handling:** when `device.online === false`, vitals are forced to `null` regardless of the last cached value in `vitalsMap` — tiles show `—` and the card's `hasDangerous`/`hasAlert` status is computed against `null`, so a stale critical reading from before the device went offline does not keep showing a red ALERT badge. This mirrors the `offline` → `"––"` behavior in `VitalCard.js`.
+
+**Overview modal click behavior:** inside `OverviewModal`, clicking a card only calls `onSelectDevice(id)` — it does **not** call `onClose()`. The modal stays open and its grid re-renders with the new `selectedDeviceId` highlighted, so users can compare nodes without the modal jumping away to the main dashboard each click.
 
 **Props:**
 

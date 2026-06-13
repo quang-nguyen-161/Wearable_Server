@@ -39,6 +39,8 @@ export default function VitalCard({
 }) {
   const [displayValue, setDisplayValue] = useState(null);
   const [prevValue, setPrevValue] = useState(null);
+  const [confirmedStatus, setConfirmedStatus] = useState("nodata");
+  const [streak, setStreak] = useState({ status: null, count: 0 });
 
   useEffect(() => {
     if (value !== null && value !== undefined) {
@@ -59,10 +61,27 @@ export default function VitalCard({
 
   // No reading available (param never reported, or device offline) → neutral status, never an alert.
   const hasValue = effectiveValue !== null && effectiveValue !== undefined;
-  const status = hasValue
+  const rawStatus = hasValue
     ? getVitalStatus(effectiveValue, min, max, _warnMin, _warnMax, _dangerMin, _dangerMax)
     : (offline ? "offline" : "nodata");
 
+  // Require 5 consecutive readings of "warning"/"dangerous" before surfacing it,
+  // so a single noisy/outlier sample doesn't flip the badge.
+  const REQUIRED_STREAK = 5;
+  useEffect(() => {
+    if (rawStatus === "warning" || rawStatus === "dangerous") {
+      setStreak(prev => {
+        const count = prev.status === rawStatus ? prev.count + 1 : 1;
+        if (count >= REQUIRED_STREAK) setConfirmedStatus(rawStatus);
+        return { status: rawStatus, count };
+      });
+    } else {
+      setStreak({ status: null, count: 0 });
+      setConfirmedStatus(rawStatus);
+    }
+  }, [rawStatus]);
+
+  const status = confirmedStatus;
   const isAlert = hasValue && status === "dangerous";
 
   return (

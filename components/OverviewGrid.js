@@ -49,7 +49,7 @@ export default function OverviewGrid({ devices, vitalsMap, onSelectDevice, selec
 
         // Overall alert level
         const statuses = Object.keys(DEFAULT_THRESHOLDS).map(key =>
-          getStatus(key, vitals[key]?.value, thresholds)
+          getStatus(key, device.online ? vitals[key]?.value : null, thresholds)
         );
         const hasAlert     = statuses.includes("dangerous") || statuses.includes("warning");
         const hasDangerous = statuses.includes("dangerous");
@@ -109,7 +109,7 @@ export default function OverviewGrid({ devices, vitalsMap, onSelectDevice, selec
             {/* Vitals row — 2×2 grid for 4 vitals */}
             <div style={{ display:"grid", gridTemplateColumns:"repeat(2,1fr)", gap: 6 }}>
               {Object.entries(VITAL_META).map(([key, meta]) => {
-                const val    = vitals[key]?.value;
+                const val    = device.online ? vitals[key]?.value : null;
                 const status = getStatus(key, val, thresholds);
                 return (
                   <div key={key} style={{

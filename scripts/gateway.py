@@ -82,7 +82,6 @@ RX_CHAR_UUID        = "6e401402-b5a3-f393-e0a9-e50e24dcca9e"
 PACKET_SAMPLES    = 50       # ECG: 50 × int16 LE = 100 bytes (default batch)
 VITALS_SIZE       = 5        # Vitals: [hrEcg u8][hrPpg u8][spo2 u8][temp u16 LE x10]
 PUBLISH_CHUNK     = 100      # max samples per MQTT message; mirrors BLE max payload — only batches >100 split
-NO_DATA_TIMEOUT_S = 6
 ADDR_WAIT_TIMEOUT_S = 10  # how long to wait for ThingsBoard's bleAddress before falling back to config
 
 _parsed_primary  = urlparse(BROKER_URL)
@@ -970,11 +969,9 @@ def _ble_write_pending(node: NodeState, peripheral) -> bool:
 
 def node_worker(node: NodeState, adapter):
     local_batch_count = 0
-    last_rx_ts        = 0.0
 
     def on_notify(data: bytes):
-        nonlocal local_batch_count, last_rx_ts
-        last_rx_ts = time.time()
+        nonlocal local_batch_count
         if len(data) == VITALS_SIZE:
             # Vitals: [hrEcg u8][hrPpg u8][spo2 u8][temp u16 LE x10] = 5 bytes
             ecg_hr, ppg_hr, spo2, temp_x10 = struct.unpack_from('<3BH', data)
@@ -999,9 +996,11 @@ def node_worker(node: NodeState, adapter):
 
     while True:
         node.addr_changed.clear()
+        peripheral = None
+        disconnected_evt = threading.Event()
         try:
             peripheral = ble_connect_node(adapter, node)
-            last_rx_ts = time.time()
+            peripheral.set_callback_on_disconnected(disconnected_evt.set)
             peripheral.notify(SERVICE_UUID, CHARACTERISTIC_UUID, on_notify)
             print(f'[BLE] {node.name}: streaming ECG from {node.get_address()}')
 
@@ -1027,8 +1026,8 @@ def node_worker(node: NodeState, adapter):
                 if node.addr_changed.is_set():
                     print(f'[BLE] {node.name}: address changed -> reconnecting')
                     break
-                if time.time() - last_rx_ts > NO_DATA_TIMEOUT_S:
-                    print(f'[BLE] {node.name}: no data for {NO_DATA_TIMEOUT_S}s — reconnecting')
+                if disconnected_evt.is_set():
+                    print(f'[BLE] {node.name}: disconnected — reconnecting')
                     break
 
         except KeyboardInterrupt:
@@ -1043,6 +1042,16 @@ def node_worker(node: NodeState, adapter):
             if node.ble_connected:
                 node.ble_connected = False
                 _announce_ble_disconnect(node.name)
+            # Tear down the link explicitly. Without this, a "no data"/addr-change
+            # break (or an exception after connect) leaves the peripheral's BLE
+            # connection slot occupied — the node's softdevice still thinks it's
+            # connected, so every subsequent connect() attempt silently fails and
+            # the gateway loops "scanning... not found" forever.
+            if peripheral is not None:
+                try:
+                    peripheral.disconnect()
+                except Exception:
+                    pass
 
 
 # ── Main ──────────────────────────────────────────────────────────────
