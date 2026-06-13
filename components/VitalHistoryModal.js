@@ -31,8 +31,10 @@ function fmtFull(ts) {
     hour:"2-digit", minute:"2-digit", second:"2-digit",
   });
 }
-function fmtShort(ts) {
-  return new Date(ts).toLocaleTimeString("en-US", { hour:"2-digit", minute:"2-digit" });
+function fmtShort(ts, withSeconds) {
+  return new Date(ts).toLocaleTimeString("en-US", withSeconds
+    ? { hour:"2-digit", minute:"2-digit", second:"2-digit" }
+    : { hour:"2-digit", minute:"2-digit" });
 }
 function toInputVal(ts) {
   const d = new Date(ts), p = n => String(n).padStart(2,"0");
@@ -82,7 +84,9 @@ function LineChart({ series, meta, fetchError, isInt }) {
   }
 
   const yTicks = Array.from({ length: 5 }, (_, i) => minV + (maxV - minV) * (i / 4));
-  const xCount = 10;
+  const windowMs = maxT - minT;
+  const xCount = windowMs <= 60_000 ? 6 : 10;
+  const showSeconds = windowMs <= 5 * 60_000;
   const xTimes = Array.from({ length: xCount }, (_, i) => minT + (maxT - minT) * (i / (xCount - 1)));
 
   const bandTop = Math.max(0, Math.min(CH, py(Math.min(meta.normalMax, maxV))));
@@ -137,7 +141,7 @@ function LineChart({ series, meta, fetchError, isInt }) {
             <text key={i} x={px(t)} y={CH+14} textAnchor="end" fontSize={10}
               fill="var(--color-text-secondary,#94a3b8)"
               transform={`rotate(-30,${px(t)},${CH+14})`}>
-              {fmtShort(t)}
+              {fmtShort(t, showSeconds)}
             </text>
           ))}
           {/* crosshair */}

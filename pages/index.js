@@ -252,7 +252,7 @@ function OverviewModal({ devices, vitalsMap, selectedDeviceId, onSelectDevice, o
           devices={devices}
           vitalsMap={vitalsMap}
           selectedDeviceId={selectedDeviceId}
-          onSelectDevice={(id) => { onSelectDevice(id); onClose(); }}
+          onSelectDevice={onSelectDevice}
           settingsMap={settingsMap}
         />
       </div>
