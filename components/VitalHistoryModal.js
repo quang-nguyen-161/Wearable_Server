@@ -39,8 +39,13 @@ function toInputVal(ts) {
   return `${d.getFullYear()}-${p(d.getMonth()+1)}-${p(d.getDate())}T${p(d.getHours())}:${p(d.getMinutes())}`;
 }
 
+function fmtVal(v, isInt) {
+  if (v == null) return "—";
+  return isInt ? String(Math.round(v)) : v.toFixed(1);
+}
+
 // ── Chart ─────────────────────────────────────────────────────────────────
-function LineChart({ series, meta, fetchError }) {
+function LineChart({ series, meta, fetchError, isInt }) {
   const containerRef = useRef(null);
   const [tooltip, setTooltip] = useState(null); // { x, y, point } — relative to container
 
@@ -77,10 +82,8 @@ function LineChart({ series, meta, fetchError }) {
   }
 
   const yTicks = Array.from({ length: 5 }, (_, i) => minV + (maxV - minV) * (i / 4));
-  const xCount = Math.min(5, series.length);
-  const xIdxs  = xCount < 2 ? [0] : Array.from({ length: xCount }, (_, i) =>
-    Math.round((i / (xCount - 1)) * (series.length - 1))
-  );
+  const xCount = 10;
+  const xTimes = Array.from({ length: xCount }, (_, i) => minT + (maxT - minT) * (i / (xCount - 1)));
 
   const bandTop = Math.max(0, Math.min(CH, py(Math.min(meta.normalMax, maxV))));
   const bandBot = Math.max(0, Math.min(CH, py(Math.max(meta.normalMin, minV))));
@@ -127,14 +130,14 @@ function LineChart({ series, meta, fetchError }) {
           ))}
           {/* y labels */}
           {yTicks.map((v,i) => (
-            <text key={i} x={-6} y={py(v)+4} textAnchor="end" fontSize={10} fill="var(--color-text-secondary,#94a3b8)">{v.toFixed(1)}</text>
+            <text key={i} x={-6} y={py(v)+4} textAnchor="end" fontSize={10} fill="var(--color-text-secondary,#94a3b8)">{fmtVal(v, isInt)}</text>
           ))}
           {/* x labels */}
-          {xIdxs.map(i => (
-            <text key={i} x={px(series[i].ts)} y={CH+14} textAnchor="end" fontSize={10}
+          {xTimes.map((t,i) => (
+            <text key={i} x={px(t)} y={CH+14} textAnchor="end" fontSize={10}
               fill="var(--color-text-secondary,#94a3b8)"
-              transform={`rotate(-30,${px(series[i].ts)},${CH+14})`}>
-              {fmtShort(series[i].ts)}
+              transform={`rotate(-30,${px(t)},${CH+14})`}>
+              {fmtShort(t)}
             </text>
           ))}
           {/* crosshair */}
@@ -178,7 +181,7 @@ function LineChart({ series, meta, fetchError }) {
             whiteSpace:    "nowrap",
           }}>
             <div style={{ fontWeight:700, color, fontSize:20, lineHeight:1 }}>
-              {p.value.toFixed(1)}<span style={{ fontSize:12, fontWeight:400, marginLeft:3 }}>{meta.unit}</span>
+              {fmtVal(p.value, isInt)}<span style={{ fontSize:12, fontWeight:400, marginLeft:3 }}>{meta.unit}</span>
             </div>
             <div style={{ color:"var(--color-text-secondary,#64748b)", fontSize:11, marginTop:5 }}>
               {fmtFull(p.ts)}
@@ -233,12 +236,16 @@ export default function VitalHistoryModal({ vitalKey, deviceId, tbToken, current
   const liveColor  = getColor(meta, currentValue);
   const liveStatus = getStatus(meta, currentValue);
 
+  const isInt = vitalKey !== "temperature";
+
   const PRESETS = [
-    { label:"15 min", ms: 15*60_000 },
-    { label:"1 hr",   ms: 3600_000  },
-    { label:"6 hr",   ms: 6*3600_000},
-    { label:"24 hr",  ms: 24*3600_000},
-    { label:"7 days", ms: 168*3600_000},
+    { label:"1 min",  ms: 60_000      },
+    { label:"5 min",  ms: 5*60_000    },
+    { label:"15 min", ms: 15*60_000   },
+    { label:"30 min", ms: 30*60_000   },
+    { label:"1 hr",   ms: 3600_000    },
+    { label:"6 hr",   ms: 6*3600_000  },
+    { label:"12 hr",  ms: 12*3600_000 },
   ];
   const activePreset = PRESETS.find(p => Math.abs((endTs - startTs) - p.ms) < 5000);
 
@@ -294,7 +301,7 @@ export default function VitalHistoryModal({ vitalKey, deviceId, tbToken, current
         {/* Stats */}
         {series.length > 0 && (
           <div style={{ display:"grid", gridTemplateColumns:"repeat(4,1fr)", gap:10, padding:"12px 20px", borderBottom:"0.5px solid var(--color-border-tertiary,#e2e8f0)" }}>
-            {[["CURRENT",currentValue?.toFixed(1)??"—"],["AVG",avg?.toFixed(1)??"—"],["MIN",minVal?.toFixed(1)??"—"],["MAX",maxVal?.toFixed(1)??"—"]].map(([lbl,val]) => (
+            {[["CURRENT",fmtVal(currentValue,isInt)],["AVG",fmtVal(avg,isInt)],["MIN",fmtVal(minVal,isInt)],["MAX",fmtVal(maxVal,isInt)]].map(([lbl,val]) => (
               <div key={lbl} style={{ background:"var(--color-background-secondary,#f8fafc)", borderRadius:10, padding:"10px 14px", border:"0.5px solid var(--color-border-tertiary,#e2e8f0)" }}>
                 <div style={{ fontSize:10, fontWeight:700, letterSpacing:"0.1em", color:"var(--color-text-secondary,#94a3b8)", marginBottom:4 }}>{lbl}</div>
                 <div style={{ fontSize:20, fontWeight:700, color: lbl==="CURRENT" ? liveColor : lbl==="MIN" ? getColor(meta, minVal) : lbl==="MAX" ? getColor(meta, maxVal) : "#64748b" }}>
@@ -327,7 +334,7 @@ export default function VitalHistoryModal({ vitalKey, deviceId, tbToken, current
           </div>
           {loading
             ? <div style={{ height:240, display:"flex", alignItems:"center", justifyContent:"center", color:"var(--color-text-secondary,#94a3b8)", fontSize:13 }}>Loading...</div>
-            : <LineChart series={series} meta={meta} fetchError={fetchError} />
+            : <LineChart series={series} meta={meta} fetchError={fetchError} isInt={isInt} />
           }
         </div>
       </div>
