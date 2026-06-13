@@ -34,7 +34,7 @@ const VITAL_LABELS = {
 
 const DEFAULT_VITAL_INTERVAL      = 1000; // ms — how often vitals are reported
 const DEFAULT_ECG_SAMPLE_FREQ     = 250;  // Hz — ADC sampling rate
-const DEFAULT_ECG_PACKET_INTERVAL = 500;  // ms — how often ECG packets are sent
+const DEFAULT_ECG_PACKET_INTERVAL = 200;  // ms — how often ECG packets are sent
 const DEFAULT_PPG_SAMPLE_FREQ     = 100;  // Hz — MAX30102 sample rate
 const DEFAULT_PPG_RED_LED_MA      = 6;    // mA — red LED drive current
 const DEFAULT_PPG_IR_LED_MA       = 6;    // mA — IR LED drive current

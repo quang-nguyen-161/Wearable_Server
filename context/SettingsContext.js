@@ -18,7 +18,7 @@ export const DEFAULT_THRESHOLDS = {
 export const DEFAULT_SETTINGS = {
   vitalInterval:     1000,
   ecgSampleFreq:     250,
-  ecgPacketInterval: 20,
+  ecgPacketInterval: 200,
   ppgSampleFreq:     100,
   ppgRedLedMa:       6,
   ppgIrLedMa:        6,
