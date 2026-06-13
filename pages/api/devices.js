@@ -6,6 +6,7 @@
 import { tbGet } from "../../lib/thingsboard";
 
 const GATEWAY_ID = process.env.TB_DEVICE_ID;
+const OFFLINE_THRESHOLD_MS = 60 * 1000;
 
 export default async function handler(req, res) {
   if (req.method !== "GET") return res.status(405).json({ error: "Method not allowed" });
@@ -69,12 +70,17 @@ export default async function handler(req, res) {
           const map = {};
           for (const item of attrs || []) map[item.key] = item.value;
 
+          const active = map.active === true || map.active === "true";
+          const lastActivityTime = map.lastActivityTime || null;
+          const recentlyActive = lastActivityTime != null &&
+            (Date.now() - lastActivityTime) < OFFLINE_THRESHOLD_MS;
+
           return {
             ...device,
             patientName:         map.patientName || null,
             displayName:         map.patientName || device.name,
-            online:              map.active === true || map.active === "true",
-            lastActivityTime:    map.lastActivityTime    || null,
+            online:              active && recentlyActive,
+            lastActivityTime,
             lastConnectTime:     map.lastConnectTime     || null,
             lastDisconnectTime:  map.lastDisconnectTime  || null,
           };

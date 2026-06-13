@@ -125,6 +125,7 @@ CMD_THR       = 0xCE   # vital thresholds:[0xCE][18×uint8 PPG/ECG/SpO2][6×uint
 CMD_PPG_CFG   = 0xCD   # PPG config:      [0xCD][fLo][fHi][redMa][irMa]           5 bytes
 CMD_VITAL_CFG = 0xCC   # Vital interval:  [0xCC][intervalLo][intervalHi]           3 bytes
 CMD_MODE_CFG  = 0xCB   # Mode config:     [0xCB][mode][periodSecLo][periodSecHi][capSecLo][capSecHi][ecgEnabled]  7 bytes
+CMD_NAME_CFG  = 0xC9   # Patient name:    [0xC9][len][name bytes...]            2-17 bytes
 
 THRESHOLD_KEYS = [
     'ppgHr_normalMin', 'ppgHr_normalMax', 'ppgHr_warnMin', 'ppgHr_warnMax', 'ppgHr_dangerMin', 'ppgHr_dangerMax',
@@ -205,6 +206,8 @@ class NodeState:
         self._vital_lock  = threading.Lock()
         self.mode_cfg     = dict(_DEFAULT_MODE_CFG)
         self._mode_lock   = threading.Lock()
+        self.patient_name = ''
+        self._name_lock   = threading.Lock()
 
     def get_address(self) -> str:
         with self._addr_lock:
@@ -403,6 +406,43 @@ class NodeState:
             with self._pending_lock:
                 self._pending_cmds[CMD_MODE_CFG] = p
 
+    def set_patient_name(self, name: str) -> bool:
+        """Update patient name; returns True if it changed.
+
+        Full names can exceed the 15-char LCD field, so only the first and
+        last words are kept, e.g. "Nguyen Thanh Chien" -> "Chien Nguyen".
+        """
+        parts = (name or '').strip().split()
+        if len(parts) >= 2:
+            name = f'{parts[-1]} {parts[0]}'
+        else:
+            name = parts[0] if parts else ''
+        name = name[:15]
+        with self._name_lock:
+            if name != self.patient_name:
+                self.patient_name = name
+                return True
+            return False
+
+    def build_name_cfg_payload(self) -> bytes | None:
+        """[CMD_NAME_CFG][len][name bytes...] — 2-17 bytes."""
+        with self._name_lock:
+            name = self.patient_name
+        if not name:
+            return None
+        name_bytes = name.encode('utf-8')[:15]
+        try:
+            return struct.pack('<BB', CMD_NAME_CFG, len(name_bytes)) + name_bytes
+        except Exception as e:
+            print(f'[NAME] {self.name}: payload build error: {e}')
+            return None
+
+    def enqueue_name_cfg(self):
+        p = self.build_name_cfg_payload()
+        if p:
+            with self._pending_lock:
+                self._pending_cmds[CMD_NAME_CFG] = p
+
     def drain_pending(self) -> list:
         """Pop and return all pending (cmd_byte, payload) pairs. Thread-safe."""
         with self._pending_lock:
@@ -474,6 +514,56 @@ def _parse_node_list() -> dict[str, NodeState]:
     if not nodes:
         nodes[TB_NODE_NAME] = NodeState(TB_NODE_NAME, BLE_ADDRESS)
     return nodes
+
+
+PATIENT_NAME_POLL_S = 30  # how often to re-check ThingsBoard's patientName (SERVER_SCOPE attr)
+
+
+def _patient_name_poller(nodes: dict[str, 'NodeState']):
+    """Periodically pull each node's `patientName` SERVER_SCOPE attribute from
+    ThingsBoard via REST (not available over the gateway MQTT attribute API,
+    which only covers SHARED/CLIENT scope) and push CMD_NAME_CFG when changed.
+    """
+    while True:
+        try:
+            login_req = urllib.request.Request(
+                f'{TB_REST_URL}/api/auth/login',
+                data=json.dumps({'username': TB_USERNAME, 'password': TB_PASSWORD}).encode(),
+                method='POST',
+                headers={'Content-Type': 'application/json', 'User-Agent': 'Mozilla/5.0'},
+            )
+            with urllib.request.urlopen(login_req, timeout=8) as resp:
+                token = json.loads(resp.read())['token']
+
+            devices_req = urllib.request.Request(
+                f'{TB_REST_URL}/api/tenant/devices?pageSize=100&page=0',
+                headers={'X-Authorization': f'Bearer {token}', 'User-Agent': 'Mozilla/5.0'},
+            )
+            with urllib.request.urlopen(devices_req, timeout=8) as resp:
+                data = json.loads(resp.read())
+
+            name_to_id = {d.get('name', ''): d.get('id', {}).get('id') for d in data.get('data', [])}
+
+            for node_name, node in nodes.items():
+                device_id = name_to_id.get(node_name)
+                if not device_id:
+                    continue
+                attr_req = urllib.request.Request(
+                    f'{TB_REST_URL}/api/plugins/telemetry/DEVICE/{device_id}/values/attributes/SERVER_SCOPE?keys=patientName',
+                    headers={'X-Authorization': f'Bearer {token}', 'User-Agent': 'Mozilla/5.0'},
+                )
+                with urllib.request.urlopen(attr_req, timeout=8) as resp:
+                    attrs = json.loads(resp.read())
+
+                patient_name = next((a.get('value') for a in attrs if a.get('key') == 'patientName'), None)
+                if patient_name is not None and node.set_patient_name(str(patient_name)):
+                    print(f'[TB]  {node_name}: patientName -> "{patient_name}"')
+                    if node.ble_connected:
+                        node.enqueue_name_cfg()
+        except Exception as e:
+            print(f'[TB]  patientName poll failed: {e}')
+
+        time.sleep(PATIENT_NAME_POLL_S)
 
 
 # ── Shared publish queue (MQTT publish thread) ────────────────────────
@@ -789,6 +879,7 @@ _CMD_LABEL = {
     CMD_PPG_CFG:   'PPG config',
     CMD_VITAL_CFG: 'vital config',
     CMD_MODE_CFG:  'mode config',
+    CMD_NAME_CFG:  'patient name',
 }
 
 
@@ -850,6 +941,7 @@ def node_worker(node: NodeState, adapter):
             node.enqueue_ppg_cfg()
             node.enqueue_vital_cfg()
             node.enqueue_mode_cfg()
+            node.enqueue_name_cfg()
 
             # Mark connected BEFORE draining so any ATTR_RESP that arrives
             # concurrently will also enqueue into _pending_cmds (deduped).
@@ -903,6 +995,7 @@ def main():
 
     mqtt_setup()
     threading.Thread(target=publish_worker, daemon=True).start()
+    threading.Thread(target=_patient_name_poller, args=(nodes,), daemon=True).start()
 
     # Connect to the server first: wait for MQTT, then for each node's
     # bleAddress attribute response/push, before touching the BLE adapter at
