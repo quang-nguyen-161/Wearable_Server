@@ -44,6 +44,8 @@ export default function VitalCard({
     if (value !== null && value !== undefined) {
       setPrevValue(displayValue);
       setDisplayValue(value);
+    } else {
+      setDisplayValue(null);
     }
   }, [value]);
 

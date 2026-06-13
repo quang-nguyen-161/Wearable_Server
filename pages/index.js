@@ -765,6 +765,13 @@ export default function Dashboard() {
     lastUpdate,
   } = useTbWebSocket(selectedDeviceId, tbToken, settings.ecgSampleFreq);
 
+  /* ── Periodic re-render tick so getValue() can detect stale vitals ── */
+  const [now, setNow] = useState(Date.now());
+  useEffect(() => {
+    const t = setInterval(() => setNow(Date.now()), 1000);
+    return () => clearInterval(t);
+  }, []);
+
   /* ── No-signal detection (CoAP waveform batches) ── */
   // Timeout = 3× vitalInterval so we don't cry wolf when the interval is long
   const [noSignal, setNoSignal] = useState(false);
@@ -909,7 +916,15 @@ export default function Dashboard() {
   };
 
   /* ── Helpers ── */
-  const getValue = (key) => vitals[key]?.value ?? null;
+  // A vital is "stale" (sensor/mode stopped reporting it) if its last update is
+  // older than 3x the vital interval — show "--" instead of the frozen last value.
+  const getValue = (key) => {
+    const entry = vitals[key];
+    if (!entry || entry.value == null) return null;
+    const staleMs = Math.max(settings.vitalInterval * 3, 10000);
+    if (now - entry.ts > staleMs) return null;
+    return entry.value;
+  };
 
   const formatTime = (date) =>
     date ? date.toLocaleTimeString("en-US", {
