@@ -54,14 +54,15 @@ export default async function handler(req, res) {
     // TB's built-in active/lastConnectTime/lastDisconnectTime tracking for
     // gateway sub-devices is unreliable (active can stay stuck true, and
     // connect/disconnect timestamps can arrive out of order). The gateway
-    // instead pushes its own 'connected' CLIENT_SCOPE attribute reflecting
-    // the real BLE link state — use that directly, defaulting to offline.
+    // instead sets its own 'connected' SERVER_SCOPE attribute (via REST,
+    // tenant-authenticated) reflecting the real BLE link state — use that
+    // directly, defaulting to offline.
 
     const devicesWithStatus = await Promise.all(
       nodeDevices.map(async (device) => {
         try {
           const attrs = await tbGet(
-            `/api/plugins/telemetry/DEVICE/${device.id}/values/attributes`,
+            `/api/plugins/telemetry/DEVICE/${device.id}/values/attributes/SERVER_SCOPE`,
             { keys: "connected,patientName" }
           );
 

@@ -581,16 +581,72 @@ _attrs_requested       = set()  # node names already pulled once (avoid re-burst
 nodes: dict[str, NodeState] = {}
 
 
-def _publish_connected_attr(client, node_name: str, connected: bool):
-    """Push our own 'connected' CLIENT_SCOPE attribute for this node.
+# ── REST-based 'connected' SERVER_SCOPE attribute ───────────────────────
+# TB's built-in active/lastConnectTime/lastDisconnectTime tracking for
+# gateway sub-devices is unreliable (active can stay stuck true, and
+# connect/disconnect timestamps can arrive out of order). Instead, the
+# gateway sets its own 'connected' SERVER_SCOPE attribute directly via the
+# REST API (tenant-authenticated) — this is the single source of truth for
+# whether the gateway currently has a live BLE link to the node.
 
-    TB's built-in active/lastConnectTime/lastDisconnectTime tracking for
-    gateway sub-devices is unreliable (active can stay stuck true, and
-    connect/disconnect timestamps can arrive out of order). This attribute
-    is the single source of truth for whether the gateway currently has a
-    live BLE link to the node — the dashboard should key off this instead.
+_tb_rest_cache = {'token': None, 'expiry': 0.0, 'device_ids': {}}
+
+
+def _tb_rest_token() -> str:
+    cache = _tb_rest_cache
+    if cache['token'] and time.time() < cache['expiry']:
+        return cache['token']
+    req = urllib.request.Request(
+        f'{TB_REST_URL}/api/auth/login',
+        data=json.dumps({'username': TB_USERNAME, 'password': TB_PASSWORD}).encode(),
+        method='POST',
+        headers={'Content-Type': 'application/json', 'User-Agent': 'Mozilla/5.0'},
+    )
+    with urllib.request.urlopen(req, timeout=8) as resp:
+        token = json.loads(resp.read())['token']
+    cache['token'] = token
+    cache['expiry'] = time.time() + 2 * 60 * 60
+    return token
+
+
+def _tb_device_id(node_name: str, token: str) -> str | None:
+    cache = _tb_rest_cache['device_ids']
+    if node_name in cache:
+        return cache[node_name]
+    req = urllib.request.Request(
+        f'{TB_REST_URL}/api/tenant/devices?pageSize=100&page=0',
+        headers={'X-Authorization': f'Bearer {token}', 'User-Agent': 'Mozilla/5.0'},
+    )
+    with urllib.request.urlopen(req, timeout=8) as resp:
+        data = json.loads(resp.read())
+    for d in data.get('data', []):
+        cache[d.get('name', '')] = d.get('id', {}).get('id')
+    return cache.get(node_name)
+
+
+def _set_connected_attr(node_name: str, connected: bool):
+    """Set the 'connected' SERVER_SCOPE attribute for a node via REST. Runs
+    synchronously — call from a background thread to avoid blocking BLE/MQTT.
     """
-    client.publish(ATTR_PUSH_TOPIC, json.dumps({"device": node_name, "data": {"connected": connected}}))
+    try:
+        token = _tb_rest_token()
+        device_id = _tb_device_id(node_name, token)
+        if not device_id:
+            print(f'[TB]  {node_name}: REST attr update skipped (device id not found)')
+            return
+        req = urllib.request.Request(
+            f'{TB_REST_URL}/api/plugins/telemetry/DEVICE/{device_id}/attributes/SERVER_SCOPE',
+            data=json.dumps({'connected': connected}).encode(),
+            method='POST',
+            headers={'Content-Type': 'application/json', 'X-Authorization': f'Bearer {token}', 'User-Agent': 'Mozilla/5.0'},
+        )
+        urllib.request.urlopen(req, timeout=8).read()
+    except Exception as e:
+        print(f'[TB]  {node_name}: failed to set connected={connected}: {e}')
+
+
+def _set_connected_attr_async(node_name: str, connected: bool):
+    threading.Thread(target=_set_connected_attr, args=(node_name, connected), daemon=True).start()
 
 
 def _connect_all_devices(client):
@@ -606,14 +662,14 @@ def _connect_all_devices(client):
     for node_name, node in nodes.items():
         if not node.ble_connected:
             client.publish('v1/gateway/disconnect', json.dumps({"device": node_name}))
-        _publish_connected_attr(client, node_name, node.ble_connected)
+        _set_connected_attr_async(node_name, node.ble_connected)
 
 
 def _announce_ble_connect(node_name: str):
     """Mark a node active in ThingsBoard once its BLE link is actually up."""
     if mqtt_connected.is_set():
         mqtt.publish('v1/gateway/connect', json.dumps({"device": node_name, "type": "default"}))
-        _publish_connected_attr(mqtt, node_name, True)
+        _set_connected_attr_async(node_name, True)
         print(f'[TB]  {node_name}: connect announced (active)')
 
 
@@ -621,7 +677,7 @@ def _announce_ble_disconnect(node_name: str):
     """Mark a node inactive in ThingsBoard once its BLE link drops."""
     if mqtt_connected.is_set():
         mqtt.publish('v1/gateway/disconnect', json.dumps({"device": node_name}))
-        _publish_connected_attr(mqtt, node_name, False)
+        _set_connected_attr_async(node_name, False)
         print(f'[TB]  {node_name}: disconnect announced (inactive)')
 
 
