@@ -121,8 +121,8 @@ ATTR_PUSH_TOPIC = 'v1/gateway/attributes'
 
 CMD_ECG_CFG   = 0xCF   # ECG config:      [0xCF][fLo][fHi][iLo][iHi]              5 bytes
 CMD_THR       = 0xCE   # vital thresholds:[0xCE][18×uint8 PPG/ECG/SpO2][6×uint16LE temp×10]  31 bytes
-CMD_PPG_CFG   = 0xCD   # PPG config:      [0xCD][fLo][fHi][redMa][irMa]           5 bytes
-CMD_VITAL_CFG = 0xCC   # Vital interval:  [0xCC][intervalLo][intervalHi]           3 bytes
+CMD_PPG_CFG   = 0xCD   # PPG config:      [0xCD][fLo][fHi][hrSrc]                 4 bytes
+CMD_VITAL_CFG = 0xCC   # Vital interval:  [0xCC][intervalLo][intervalHi][lcdIntLo][lcdIntHi]  5 bytes
 CMD_MODE_CFG  = 0xCB   # Mode config:     [0xCB][mode][periodSecLo][periodSecHi][capSecLo][capSecHi][ecgEnabled]  7 bytes
 CMD_NAME_CFG  = 0xC9   # Patient name:    [0xC9][len][name bytes...]            2-17 bytes
 
@@ -135,8 +135,8 @@ THRESHOLD_KEYS = [
 # Temperature keys are stored ×10 (uint16) to preserve 0.1°C resolution
 TEMP_KEYS = frozenset(k for k in THRESHOLD_KEYS if k.startswith('temp_'))
 ECG_CFG_KEYS   = ['ecgSampleFreq', 'ecgPacketInterval']
-PPG_CFG_KEYS   = ['ppgSampleFreq', 'ppgRedLedMa', 'ppgIrLedMa']
-VITAL_CFG_KEYS = ['vitalInterval']
+PPG_CFG_KEYS   = ['ppgSampleFreq', 'ppgHrSource']
+VITAL_CFG_KEYS = ['vitalInterval', 'lcdInterval']
 MODE_CFG_KEYS  = ['deviceMode', 'periodicInterval', 'captureWindow', 'showEcg']
 ALL_SHARED_KEYS = (['bleAddress'] + THRESHOLD_KEYS
                    + ECG_CFG_KEYS + PPG_CFG_KEYS + VITAL_CFG_KEYS + MODE_CFG_KEYS)
@@ -164,12 +164,14 @@ _DEFAULT_ECG_CFG = {
 
 _DEFAULT_PPG_CFG = {
     'ppgSampleFreq': 100,
-    'ppgRedLedMa':   6,
-    'ppgIrLedMa':    6,
+    'ppgHrSource':   'ir',  # 'ir' | 'red' — LED channel used for HR peak detection
 }
+
+_PPG_HR_SOURCE_CODE = {'ir': 0, 'red': 1}
 
 _DEFAULT_VITAL_CFG = {
     'vitalInterval': 1000,
+    'lcdInterval':   1000,  # ms — CONTINUOUS mode LCD dashboard refresh cadence
 }
 
 _DEFAULT_MODE_CFG = {
@@ -305,26 +307,30 @@ class NodeState:
         changed = False
         with self._ppg_lock:
             for k, v in updates.items():
-                if k in self.ppg_cfg:
+                if k not in self.ppg_cfg:
+                    continue
+                if k == 'ppgHrSource':
+                    vs  = str(v).strip().strip('"\'').lower()
+                    new = vs if vs in _PPG_HR_SOURCE_CODE else 'ir'
+                else:
                     try:
                         new = int(float(v))
-                        if new != self.ppg_cfg[k]:
-                            self.ppg_cfg[k] = new
-                            changed = True
                     except (TypeError, ValueError):
-                        pass
+                        continue
+                if new != self.ppg_cfg[k]:
+                    self.ppg_cfg[k] = new
+                    changed = True
         return changed
 
     def build_ppg_cfg_payload(self) -> bytes | None:
-        """[CMD_PPG_CFG][sampleFreqLo][sampleFreqHi][redMa][irMa] — 5 bytes."""
+        """[CMD_PPG_CFG][sampleFreqLo][sampleFreqHi][hrSource] — 4 bytes."""
         with self._ppg_lock:
             cfg = self.ppg_cfg.copy()
         try:
-            return struct.pack('<BH2B',
+            return struct.pack('<BHB',
                 CMD_PPG_CFG,
                 cfg['ppgSampleFreq'],
-                cfg['ppgRedLedMa'],
-                cfg['ppgIrLedMa'],
+                _PPG_HR_SOURCE_CODE.get(str(cfg.get('ppgHrSource', 'ir')).strip().strip('"\'').lower(), 0),
             )
         except Exception as e:
             print(f'[PPG] {self.name}: payload build error: {e}')
@@ -351,13 +357,14 @@ class NodeState:
         return changed
 
     def build_vital_cfg_payload(self) -> bytes | None:
-        """[CMD_VITAL_CFG][intervalLo][intervalHi] — 3 bytes."""
+        """[CMD_VITAL_CFG][intervalLo][intervalHi][lcdIntLo][lcdIntHi] — 5 bytes."""
         with self._vital_lock:
             cfg = self.vital_cfg.copy()
         try:
-            return struct.pack('<BH',
+            return struct.pack('<BHH',
                 CMD_VITAL_CFG,
                 cfg['vitalInterval'],
+                cfg['lcdInterval'],
             )
         except Exception as e:
             print(f'[VIT] {self.name}: payload build error: {e}')
@@ -516,12 +523,19 @@ def _parse_node_list() -> dict[str, NodeState]:
 
 
 PATIENT_NAME_POLL_S = 30  # how often to re-check ThingsBoard's patientName (SERVER_SCOPE attr)
+                          # and bleAddress (SHARED attr, as a catch-up for missed MQTT pushes)
 
 
 def _patient_name_poller(nodes: dict[str, 'NodeState']):
-    """Periodically pull each node's `patientName` SERVER_SCOPE attribute from
-    ThingsBoard via REST (not available over the gateway MQTT attribute API,
-    which only covers SHARED/CLIENT scope) and push CMD_NAME_CFG when changed.
+    """Periodically pull attributes ThingsBoard's push channel can miss:
+
+    - `patientName` (SERVER_SCOPE attr) isn't delivered over the gateway MQTT
+      attribute API at all, which only covers SHARED/CLIENT scope.
+    - `bleAddress` (SHARED attr) normally arrives via ATTR_PUSH_TOPIC, but if
+      it's edited while the gateway is mid-scan for the node's old address,
+      the push can land and be acted on, yet the scan loop may still be
+      working off a stale `_scan_cache` sweep. Re-checking it here via REST
+      is a cheap catch-up so the node eventually picks up the new address.
     """
     while True:
         try:
@@ -559,6 +573,17 @@ def _patient_name_poller(nodes: dict[str, 'NodeState']):
                     print(f'[TB]  {node_name}: patientName -> "{patient_name}"')
                     if node.ble_connected:
                         node.enqueue_name_cfg()
+
+                addr_req = urllib.request.Request(
+                    f'{TB_REST_URL}/api/plugins/telemetry/DEVICE/{device_id}/values/attributes/SHARED_SCOPE?keys=bleAddress',
+                    headers={'X-Authorization': f'Bearer {token}', 'User-Agent': 'Mozilla/5.0'},
+                )
+                with urllib.request.urlopen(addr_req, timeout=8) as resp:
+                    attrs = json.loads(resp.read())
+
+                ble_address = next((a.get('value') for a in attrs if a.get('key') == 'bleAddress'), None)
+                if ble_address is not None:
+                    node.set_address(str(ble_address))
         except Exception as e:
             print(f'[TB]  patientName poll failed: {e}')
 
@@ -952,15 +977,44 @@ _CMD_LABEL = {
     CMD_NAME_CFG:  'patient name',
 }
 
+_PPG_HR_SOURCE_NAME = {0: 'ir', 1: 'red'}
+
+
+def _describe_payload(cmd_byte: int, payload: bytes) -> str:
+    """Decode a command payload back into a human-readable value string for logging."""
+    try:
+        if cmd_byte == CMD_ECG_CFG and len(payload) == 5:
+            freq, interval = struct.unpack_from('<2H', payload, 1)
+            return f'freq={freq}Hz interval={interval}ms'
+        if cmd_byte == CMD_PPG_CFG and len(payload) == 4:
+            freq, hr_src = struct.unpack_from('<HB', payload, 1)
+            return (f'freq={freq}Hz '
+                    f'hrSource={_PPG_HR_SOURCE_NAME.get(hr_src, hr_src)}')
+        if cmd_byte == CMD_VITAL_CFG and len(payload) == 5:
+            interval, lcd_interval = struct.unpack_from('<2H', payload, 1)
+            return f'vitalInterval={interval}ms lcdInterval={lcd_interval}ms'
+        if cmd_byte == CMD_MODE_CFG and len(payload) == 7:
+            mode, period, capture, ecg_en = struct.unpack_from('<BHHB', payload, 1)
+            return f'mode={mode} period={period}s capture={capture}s ecgEnabled={bool(ecg_en)}'
+        if cmd_byte == CMD_NAME_CFG and len(payload) >= 2:
+            name_len = payload[1]
+            return f'name={payload[2:2 + name_len].decode("utf-8", "replace")!r}'
+        if cmd_byte == CMD_THR:
+            return f'{len(payload)} bytes'
+    except Exception:
+        pass
+    return payload.hex()
+
 
 def _ble_write_pending(node: NodeState, peripheral) -> bool:
     """Drain and send all pending commands. Returns False if a write fails."""
     for cmd_byte, payload in node.drain_pending():
+        label = _CMD_LABEL.get(cmd_byte, "cmd")
         try:
             peripheral.write_request(SERVICE_UUID, RX_CHAR_UUID, payload)
-            print(f'[BLE] {node.name}: {_CMD_LABEL.get(cmd_byte, "cmd")} written')
+            print(f'[BLE] {node.name}: {label} written — {_describe_payload(cmd_byte, payload)}')
         except Exception as e:
-            print(f'[BLE] {node.name}: write error ({_CMD_LABEL.get(cmd_byte, "cmd")}): {e}')
+            print(f'[BLE] {node.name}: write error ({label}): {e}')
             return False
     return True
 

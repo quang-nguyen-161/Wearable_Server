@@ -209,14 +209,18 @@ export default function VitalHistoryModal({ vitalKey, deviceId, tbToken, current
   const [loading, setLoading] = useState(false);
   const [fetchError, setFetchError] = useState(null);
 
+  const hasDataRef = useRef(false);
   const fetchHistory = useCallback(async () => {
     if (!deviceId || !vitalKey || !tbToken) return;
-    setLoading(true);
+    // Only show the loading placeholder on the first fetch — background
+    // refreshes for the rolling window update the chart in place.
+    if (!hasDataRef.current) setLoading(true);
     setFetchError(null);
     try {
       const hours = (endTs - startTs) / 3600_000;
       const pts = await getTelemetryHistory(tbToken, deviceId, vitalKey, hours, 5000);
       setSeries(pts.filter(p => p.ts >= startTs && p.ts <= endTs));
+      hasDataRef.current = true;
     } catch(e) {
       console.error(e);
       setFetchError(e.message);
@@ -224,6 +228,7 @@ export default function VitalHistoryModal({ vitalKey, deviceId, tbToken, current
     finally { setLoading(false); }
   }, [deviceId, vitalKey, tbToken, startTs, endTs]);
 
+  useEffect(() => { hasDataRef.current = false; }, [vitalKey, deviceId]);
   useEffect(() => { fetchHistory(); }, [fetchHistory]);
 
   useEffect(() => {
@@ -252,6 +257,18 @@ export default function VitalHistoryModal({ vitalKey, deviceId, tbToken, current
     { label:"12 hr",  ms: 12*3600_000 },
   ];
   const activePreset = PRESETS.find(p => Math.abs((endTs - startTs) - p.ms) < 5000);
+
+  // While a preset (rolling window) is active, keep sliding the window to "now"
+  // every few seconds so the chart updates in realtime.
+  useEffect(() => {
+    if (!activePreset) return;
+    const id = setInterval(() => {
+      const n = Date.now();
+      setStartTs(n - activePreset.ms);
+      setEndTs(n);
+    }, 2000);
+    return () => clearInterval(id);
+  }, [activePreset?.label]);
 
   return (
     <div onClick={e => { if(e.target===e.currentTarget) onClose(); }}

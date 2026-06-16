@@ -79,7 +79,7 @@ export default function VitalCard({
       setStreak({ status: null, count: 0 });
       setConfirmedStatus(rawStatus);
     }
-  }, [rawStatus]);
+  }, [rawStatus, effectiveValue]);
 
   const status = confirmedStatus;
   const isAlert = hasValue && status === "dangerous";

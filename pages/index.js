@@ -800,10 +800,10 @@ export default function Dashboard() {
   useEffect(() => {
     if (!selectedDeviceId || !vitals) return;
     const { thresholds } = settings;
-    const ppgHr = vitals?.ppgHeartRate?.value;
-    const ecgHr = vitals?.ecgHeartRate?.value;
-    const spo2  = vitals?.spo2?.value;
-    const temp  = vitals?.temperature?.value;
+    const ppgHr = getValue("ppgHeartRate");
+    const ecgHr = getValue("ecgHeartRate");
+    const spo2  = getValue("spo2");
+    const temp  = getValue("temperature");
     const hasAlert =
       selectedDevice?.online !== false &&
       ((ppgHr != null && (ppgHr < thresholds.ppgHeartRate.dangerMin || ppgHr > thresholds.ppgHeartRate.dangerMax)) ||
@@ -811,12 +811,15 @@ export default function Dashboard() {
       (spo2  != null && (spo2  < thresholds.spo2.dangerMin         || spo2  > thresholds.spo2.dangerMax))         ||
       (temp  != null && (temp  < thresholds.temperature.dangerMin  || temp  > thresholds.temperature.dangerMax)));
     setDeviceAlerts((prev) => ({ ...prev, [selectedDeviceId]: hasAlert }));
-  }, [vitals, selectedDeviceId, settings, selectedDevice]);
+  }, [vitals, selectedDeviceId, settings, selectedDevice, now]);
 
   /* ── Fetch device list ── */
+  const hasDevicesRef = useRef(false);
   const fetchDevices = useCallback(async () => {
     if (!tbAuthToken) return;
-    setDevicesLoading(true);
+    // Only show the skeleton loader on the first load — background polling
+    // for connect/disconnect updates the device cards in place.
+    if (!hasDevicesRef.current) setDevicesLoading(true);
     try {
       const list = await getDevices(tbAuthToken);
       setDevices(list);
@@ -834,6 +837,7 @@ export default function Dashboard() {
       });
       setEcgEnabledMap(ecgMap);
       setDeviceModeMap(modeMap);
+      hasDevicesRef.current = true;
     } catch (err) {
       console.error("Device list fetch error:", err);
       setError(err.message);
@@ -897,6 +901,13 @@ export default function Dashboard() {
 
   useEffect(() => {
     if (tbAuthToken) fetchDevices();
+  }, [tbAuthToken, fetchDevices]);
+
+  /* ── Poll device list so connect/disconnect (and new nodes) reflect live ── */
+  useEffect(() => {
+    if (!tbAuthToken) return;
+    const id = setInterval(fetchDevices, 15000);
+    return () => clearInterval(id);
   }, [tbAuthToken, fetchDevices]);
 
   /* ── On device change: fetch patient (WS handles vitals/signals) ── */
@@ -1159,9 +1170,7 @@ export default function Dashboard() {
             { id: 0, icon: "⚡", label: "Continuous",  desc: "Real-time full data stream" },
             { id: 1, icon: "⏱",  label: "Periodic",    desc: "Reports at the vital interval" },
           ];
-          const intervalLabel = settings.vitalInterval >= 1000
-            ? `${settings.vitalInterval / 1000}s`
-            : `${settings.vitalInterval}ms`;
+          const intervalLabel = `Wake ${settings.periodicInterval}s · Capture ${settings.captureWindow}s`;
           return (
             <div className="device-mode-bar">
               <span className="device-mode-label">MODE</span>
@@ -1189,7 +1198,7 @@ export default function Dashboard() {
               </div>
               {mode === 1 && (
                 <div className="device-mode-hint">
-                  Interval: <strong>{intervalLabel}</strong>
+                  <strong>{intervalLabel}</strong>
                   &nbsp;·&nbsp;
                   <a
                     href={`/settings?deviceId=${selectedDeviceId}`}
@@ -1380,6 +1389,7 @@ export default function Dashboard() {
         <NodeDetailModal
           device={modalDevice}
           vitals={modalDevice.id === selectedDeviceId ? vitals : {}}
+          vitalInterval={settings.vitalInterval}
           onClose={() => setModalDevice(null)}
         />
       )}

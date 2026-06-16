@@ -28,7 +28,7 @@ function getStatusColor(status) {
   return "#22c55e";
 }
 
-export default function NodeDetailModal({ device, vitals, onClose }) {
+export default function NodeDetailModal({ device, vitals, vitalInterval, onClose }) {
   const { token } = useTbAuth();
   const [bleAddr,       setBleAddr]       = useState("");
   const [bleInput,      setBleInput]      = useState("");
@@ -65,7 +65,13 @@ export default function NodeDetailModal({ device, vitals, onClose }) {
     }
   };
 
-  // Close on backdrop click
+  // Format raw hex input as "xx:xx:xx:xx:xx:xx" by auto-inserting colons every 2 hex digits.
+function formatBleAddr(raw) {
+  const hex = raw.replace(/[^0-9a-fA-F]/g, "").slice(0, 12).toLowerCase();
+  return hex.match(/.{1,2}/g)?.join(":") || "";
+}
+
+// Close on backdrop click
   const handleBackdrop = (e) => {
     if (e.target === e.currentTarget) onClose();
   };
@@ -97,7 +103,7 @@ export default function NodeDetailModal({ device, vitals, onClose }) {
                     <input
                       className="ble-input"
                       value={bleInput}
-                      onChange={e => setBleInput(e.target.value)}
+                      onChange={e => setBleInput(formatBleAddr(e.target.value))}
                       onKeyDown={e => {
                         if (e.key === "Enter") saveBleAddr();
                         if (e.key === "Escape") { setBleEditing(false); setBleInput(bleAddr); }
@@ -134,7 +140,9 @@ export default function NodeDetailModal({ device, vitals, onClose }) {
         {/* ── Vital cards ── */}
         <div className="modal-vitals">
           {VITALS_CONFIG.map(v => {
-            const val    = vitals[v.key]?.value;
+            const entry = vitals[v.key];
+            const staleMs = Math.max((vitalInterval || 0) * 3, 10000);
+            const val    = (entry?.value == null || Date.now() - entry.ts > staleMs) ? null : entry.value;
             const status = getStatus(v.key, val);
             return (
               <div className="modal-vital-card" key={v.key}>

@@ -6,8 +6,6 @@
 // - ecgSampleFreq       → SHARED_SCOPE (firmware: ADC sampling rate in Hz)
 // - ecgPacketInterval   → SHARED_SCOPE (firmware: ECG packet send interval in ms)
 // - ppgSampleFreq       → SHARED_SCOPE (firmware: MAX30102 sample rate in Hz)
-// - ppgRedLedMa         → SHARED_SCOPE (firmware: red LED drive current in mA)
-// - ppgIrLedMa          → SHARED_SCOPE (firmware: IR LED drive current in mA)
 
 import { useState, useEffect, useCallback } from "react";
 import { useRouter } from "next/router";
@@ -33,11 +31,11 @@ const VITAL_LABELS = {
 };
 
 const DEFAULT_VITAL_INTERVAL      = 1000; // ms — how often vitals are reported
+const DEFAULT_LCD_INTERVAL        = 1000; // ms — CONTINUOUS mode LCD dashboard refresh cadence
 const DEFAULT_ECG_SAMPLE_FREQ     = 250;  // Hz — ADC sampling rate
 const DEFAULT_ECG_PACKET_INTERVAL = 200;  // ms — how often ECG packets are sent
 const DEFAULT_PPG_SAMPLE_FREQ     = 100;  // Hz — MAX30102 sample rate
-const DEFAULT_PPG_RED_LED_MA      = 6;    // mA — red LED drive current
-const DEFAULT_PPG_IR_LED_MA       = 6;    // mA — IR LED drive current
+const DEFAULT_PPG_HR_SOURCE       = "ir"; // "ir" | "red" — LED channel used for HR peak detection
 
 const DEFAULT_DEVICE_MODE       = 0;  // 0 Continuous / 1 Periodic  (ECG is a separate flag, toggled on the dashboard)
 const DEFAULT_PERIODIC_INTERVAL = 10; // s — wake-to-wake interval (5–60)
@@ -48,8 +46,12 @@ const DEVICE_MODE_OPTIONS = [
   { value: 1, label: "Periodic" },
 ];
 
-const ECG_FREQ_PRESETS = [100, 250, 500, 750, 1000];
 const PPG_FREQ_OPTIONS = [50, 100, 200, 400, 800, 1000];
+
+const ECG_FREQ_PRESETS   = [50, 125, 250, 500, 1000];
+const ECG_PACKET_PRESETS = [50, 100, 200, 500, 1000];
+
+const clamp = (val, min, max) => Math.min(max, Math.max(min, val));
 
 // ── Settings page ────────────────────────────────────────────────────────────
 export default function Settings() {
@@ -61,11 +63,11 @@ export default function Settings() {
   const { updateSettings }                          = useSettings(selectedDeviceId);
   const [thresholds,         setThresholds]         = useState(DEFAULT_THRESHOLDS);
   const [vitalInterval,      setVitalInterval]      = useState(DEFAULT_VITAL_INTERVAL);
+  const [lcdInterval,        setLcdInterval]        = useState(DEFAULT_LCD_INTERVAL);
   const [ecgSampleFreq,      setEcgSampleFreq]      = useState(DEFAULT_ECG_SAMPLE_FREQ);
   const [ecgPacketInterval,  setEcgPacketInterval]  = useState(DEFAULT_ECG_PACKET_INTERVAL);
   const [ppgSampleFreq,      setPpgSampleFreq]      = useState(DEFAULT_PPG_SAMPLE_FREQ);
-  const [ppgRedLedMa,        setPpgRedLedMa]        = useState(DEFAULT_PPG_RED_LED_MA);
-  const [ppgIrLedMa,         setPpgIrLedMa]         = useState(DEFAULT_PPG_IR_LED_MA);
+  const [ppgHrSource,        setPpgHrSource]        = useState(DEFAULT_PPG_HR_SOURCE);
   const [deviceMode,         setDeviceMode]         = useState(DEFAULT_DEVICE_MODE);
   const [periodicInterval,   setPeriodicInterval]   = useState(DEFAULT_PERIODIC_INTERVAL);
   const [captureWindow,      setCaptureWindow]      = useState(DEFAULT_CAPTURE_WINDOW);
@@ -135,11 +137,11 @@ export default function Settings() {
         },
       });
       setVitalInterval(a.vitalInterval ?? DEFAULT_VITAL_INTERVAL);
+      setLcdInterval(a.lcdInterval ?? DEFAULT_LCD_INTERVAL);
       setEcgSampleFreq(a.ecgSampleFreq ?? DEFAULT_ECG_SAMPLE_FREQ);
       setEcgPacketInterval(a.ecgPacketInterval ?? DEFAULT_ECG_PACKET_INTERVAL);
       setPpgSampleFreq(a.ppgSampleFreq ?? DEFAULT_PPG_SAMPLE_FREQ);
-      setPpgRedLedMa(a.ppgRedLedMa ?? DEFAULT_PPG_RED_LED_MA);
-      setPpgIrLedMa(a.ppgIrLedMa ?? DEFAULT_PPG_IR_LED_MA);
+      setPpgHrSource(a.ppgHrSource ?? DEFAULT_PPG_HR_SOURCE);
       setDeviceMode(a.deviceMode ?? DEFAULT_DEVICE_MODE);
       setPeriodicInterval(a.periodicInterval ?? DEFAULT_PERIODIC_INTERVAL);
       setCaptureWindow(a.captureWindow ?? DEFAULT_CAPTURE_WINDOW);
@@ -165,8 +167,8 @@ export default function Settings() {
       //   - gateway reads warn keys to push CMD_THR to firmware
       //   - dashboard reads all keys for color-coding vitals
       const sharedAttrs = {
-        vitalInterval, ecgSampleFreq, ecgPacketInterval,
-        ppgSampleFreq, ppgRedLedMa, ppgIrLedMa,
+        vitalInterval, lcdInterval, ecgSampleFreq, ecgPacketInterval,
+        ppgSampleFreq, ppgHrSource,
         deviceMode, periodicInterval, captureWindow,
         ppgHr_normalMin: thresholds.ppgHeartRate.normalMin,
         ppgHr_normalMax: thresholds.ppgHeartRate.normalMax,
@@ -194,7 +196,7 @@ export default function Settings() {
         temp_dangerMax:  thresholds.temperature.dangerMax,
       };
       await saveDeviceAttributes(token, selectedDeviceId, "SHARED_SCOPE", sharedAttrs);
-      updateSettings({ vitalInterval, ecgSampleFreq, ecgPacketInterval, ppgSampleFreq, ppgRedLedMa, ppgIrLedMa, deviceMode, periodicInterval, captureWindow, thresholds });
+      updateSettings({ vitalInterval, lcdInterval, ecgSampleFreq, ecgPacketInterval, ppgSampleFreq, ppgHrSource, deviceMode, periodicInterval, captureWindow, thresholds });
 
       setSaveMsg({ type: "ok", text: "Settings saved to ThingsBoard ✓" });
     } catch (e) {
@@ -209,11 +211,11 @@ export default function Settings() {
   const handleReset = () => {
     setThresholds(DEFAULT_THRESHOLDS);
     setVitalInterval(DEFAULT_VITAL_INTERVAL);
+    setLcdInterval(DEFAULT_LCD_INTERVAL);
     setEcgSampleFreq(DEFAULT_ECG_SAMPLE_FREQ);
     setEcgPacketInterval(DEFAULT_ECG_PACKET_INTERVAL);
     setPpgSampleFreq(DEFAULT_PPG_SAMPLE_FREQ);
-    setPpgRedLedMa(DEFAULT_PPG_RED_LED_MA);
-    setPpgIrLedMa(DEFAULT_PPG_IR_LED_MA);
+    setPpgHrSource(DEFAULT_PPG_HR_SOURCE);
     setDeviceMode(DEFAULT_DEVICE_MODE);
     setPeriodicInterval(DEFAULT_PERIODIC_INTERVAL);
     setCaptureWindow(DEFAULT_CAPTURE_WINDOW);
@@ -366,6 +368,26 @@ export default function Settings() {
               ))}
             </div>
 
+            {deviceMode === 0 && (
+              <div className="ecg-field-group">
+                <div className="ecg-field-label">
+                  LCD DASHBOARD INTERVAL
+                  <span className="ecg-field-unit">s</span>
+                </div>
+                <div className="ecg-field-sub">How often the on-device LCD dashboard refreshes (HR, SpO₂, temperature, BLE status) while in Continuous mode.</div>
+                <div className="interval-row">
+                  <input
+                    type="number"
+                    min={1} max={30} step={1}
+                    value={lcdInterval / 1000}
+                    onChange={e => setLcdInterval(clamp(Number(e.target.value) || 0, 1, 30) * 1000)}
+                    className="interval-num-input"
+                  />
+                  <span className="interval-value">s</span>
+                </div>
+              </div>
+            )}
+
             {deviceMode === 1 && (
               <>
                 {/* Periodic wake-to-wake interval */}
@@ -374,20 +396,20 @@ export default function Settings() {
                     WAKE INTERVAL
                     <span className="ecg-field-unit">s</span>
                   </div>
-                  <div className="ecg-field-sub">How often the device wakes to take a measurement (5–60&nbsp;s).</div>
+                  <div className="ecg-field-sub">How often the device wakes to take a measurement.</div>
                   <div className="interval-row">
                     <input
-                      type="range"
-                      min={5} max={60} step={1}
+                      type="number"
+                      step={1}
                       value={periodicInterval}
                       onChange={e => {
-                        const v = Number(e.target.value);
+                        const v = Number(e.target.value) || 0;
                         setPeriodicInterval(v);
-                        if (captureWindow > v) setCaptureWindow(v);
+                        if (captureWindow >= v) setCaptureWindow(Math.max(0, v - 1));
                       }}
-                      className="interval-slider"
+                      className="interval-num-input"
                     />
-                    <span className="interval-value">{periodicInterval}s</span>
+                    <span className="interval-value">s</span>
                   </div>
                 </div>
 
@@ -397,16 +419,16 @@ export default function Settings() {
                     CAPTURE WINDOW
                     <span className="ecg-field-unit">s</span>
                   </div>
-                  <div className="ecg-field-sub">How long the device measures each time it wakes (5&nbsp;s … wake interval).</div>
+                  <div className="ecg-field-sub">How long the device measures each time it wakes (must be less than wake interval).</div>
                   <div className="interval-row">
                     <input
-                      type="range"
-                      min={5} max={Math.max(5, periodicInterval)} step={1}
+                      type="number"
+                      min={0} max={Math.max(0, periodicInterval - 1)} step={1}
                       value={captureWindow}
-                      onChange={e => setCaptureWindow(Number(e.target.value))}
-                      className="interval-slider"
+                      onChange={e => setCaptureWindow(clamp(Number(e.target.value) || 0, 0, Math.max(0, periodicInterval - 1)))}
+                      className="interval-num-input"
                     />
-                    <span className="interval-value">{captureWindow}s</span>
+                    <span className="interval-value">s</span>
                   </div>
                 </div>
               </>
@@ -421,24 +443,13 @@ export default function Settings() {
             </div>
             <div className="interval-row">
               <input
-                type="range"
-                min={1000} max={30000} step={1000}
-                value={vitalInterval}
-                onChange={e => setVitalInterval(Number(e.target.value))}
-                className="interval-slider"
+                type="number"
+                min={1} max={30} step={1}
+                value={vitalInterval / 1000}
+                onChange={e => setVitalInterval(clamp(Number(e.target.value) || 0, 1, 30) * 1000)}
+                className="interval-num-input"
               />
-              <span className="interval-value">{vitalInterval >= 1000 ? `${vitalInterval/1000}s` : `${vitalInterval}ms`}</span>
-            </div>
-            <div className="interval-presets">
-              {[1000, 2000, 5000, 10000, 15000, 30000].map(ms => (
-                <button
-                  key={ms}
-                  className={`preset-btn ${vitalInterval === ms ? "preset-btn--active" : ""}`}
-                  onClick={() => setVitalInterval(ms)}
-                >
-                  {ms < 1000 ? `${ms}ms` : `${ms/1000}s`}
-                </button>
-              ))}
+              <span className="interval-value">s</span>
             </div>
           </section>
 
@@ -467,13 +478,13 @@ export default function Settings() {
                 <span className="interval-value">{ecgSampleFreq} Hz</span>
               </div>
               <div className="interval-presets">
-                {ECG_FREQ_PRESETS.map(hz => (
+                {ECG_FREQ_PRESETS.map(v => (
                   <button
-                    key={hz}
-                    className={`preset-btn ${ecgSampleFreq === hz ? "preset-btn--active" : ""}`}
-                    onClick={() => setEcgSampleFreq(hz)}
+                    key={v}
+                    className={`preset-btn ${ecgSampleFreq === v ? "preset-btn--active" : ""}`}
+                    onClick={() => setEcgSampleFreq(v)}
                   >
-                    {hz} Hz
+                    {v} Hz
                   </button>
                 ))}
               </div>
@@ -494,16 +505,16 @@ export default function Settings() {
                   onChange={e => setEcgPacketInterval(Number(e.target.value))}
                   className="interval-slider"
                 />
-                <span className="interval-value">{ecgPacketInterval >= 1000 ? `${ecgPacketInterval/1000}s` : `${ecgPacketInterval}ms`}</span>
+                <span className="interval-value">{ecgPacketInterval} ms</span>
               </div>
               <div className="interval-presets">
-                {[50, 100, 200, 500, 1000, 2000].map(ms => (
+                {ECG_PACKET_PRESETS.map(v => (
                   <button
-                    key={ms}
-                    className={`preset-btn ${ecgPacketInterval === ms ? "preset-btn--active" : ""}`}
-                    onClick={() => setEcgPacketInterval(ms)}
+                    key={v}
+                    className={`preset-btn ${ecgPacketInterval === v ? "preset-btn--active" : ""}`}
+                    onClick={() => setEcgPacketInterval(v)}
                   >
-                    {ms < 1000 ? `${ms}ms` : `${ms/1000}s`}
+                    {v} ms
                   </button>
                 ))}
               </div>
@@ -530,85 +541,46 @@ export default function Settings() {
               <div className="interval-row">
                 <input
                   type="range"
-                  min={0} max={PPG_FREQ_OPTIONS.length - 1} step={1}
-                  value={PPG_FREQ_OPTIONS.indexOf(ppgSampleFreq) === -1 ? 1 : PPG_FREQ_OPTIONS.indexOf(ppgSampleFreq)}
-                  onChange={e => setPpgSampleFreq(PPG_FREQ_OPTIONS[Number(e.target.value)])}
+                  min={PPG_FREQ_OPTIONS[0]} max={PPG_FREQ_OPTIONS[PPG_FREQ_OPTIONS.length - 1]} step={50}
+                  value={ppgSampleFreq}
+                  onChange={e => setPpgSampleFreq(Number(e.target.value))}
                   className="interval-slider"
                 />
                 <span className="interval-value">{ppgSampleFreq} Hz</span>
               </div>
               <div className="interval-presets">
-                {PPG_FREQ_OPTIONS.map(hz => (
+                {PPG_FREQ_OPTIONS.map(v => (
                   <button
-                    key={hz}
-                    className={`preset-btn ${ppgSampleFreq === hz ? "preset-btn--active" : ""}`}
-                    onClick={() => setPpgSampleFreq(hz)}
+                    key={v}
+                    className={`preset-btn ${ppgSampleFreq === v ? "preset-btn--active" : ""}`}
+                    onClick={() => setPpgSampleFreq(v)}
                   >
-                    {hz} Hz
+                    {v} Hz
                   </button>
                 ))}
               </div>
             </div>
 
-            {/* Red LED current */}
+            {/* HR source LED */}
             <div className="ecg-field-group">
-              <div className="ecg-field-label">
-                RED LED CURRENT
-                <span className="ecg-field-unit">mA</span>
-              </div>
-              <div className="ecg-field-sub">Drive current for the red LED (660 nm). Higher current improves signal through thicker or darker tissue.</div>
-              <div className="interval-row">
-                <input
-                  type="range"
-                  min={0} max={51} step={1}
-                  value={ppgRedLedMa}
-                  onChange={e => setPpgRedLedMa(Number(e.target.value))}
-                  className="interval-slider interval-slider--red"
-                />
-                <span className="interval-value interval-value--red">{ppgRedLedMa} mA</span>
-              </div>
+              <div className="ecg-field-label">HEART RATE SOURCE</div>
+              <div className="ecg-field-sub">Which LED channel's pulse waveform is used to detect heartbeats for PPG heart rate.</div>
               <div className="interval-presets">
-                {[3, 6, 12, 25, 51].map(ma => (
-                  <button
-                    key={ma}
-                    className={`preset-btn ${ppgRedLedMa === ma ? "preset-btn--active preset-btn--red" : ""}`}
-                    onClick={() => setPpgRedLedMa(ma)}
-                  >
-                    {ma} mA
-                  </button>
-                ))}
+                <button
+                  className={`preset-btn preset-btn--ir ${ppgHrSource === "ir" ? "preset-btn--active" : ""}`}
+                  onClick={() => setPpgHrSource("ir")}
+                >
+                  IR LED
+                </button>
+                <button
+                  className={`preset-btn preset-btn--red ${ppgHrSource === "red" ? "preset-btn--active" : ""}`}
+                  onClick={() => setPpgHrSource("red")}
+                >
+                  RED LED
+                </button>
               </div>
             </div>
 
-            {/* IR LED current */}
-            <div className="ecg-field-group">
-              <div className="ecg-field-label">
-                IR LED CURRENT
-                <span className="ecg-field-unit">mA</span>
-              </div>
-              <div className="ecg-field-sub">Drive current for the infrared LED (880 nm). Used alongside the red LED for SpO₂ ratio calculation.</div>
-              <div className="interval-row">
-                <input
-                  type="range"
-                  min={0} max={51} step={1}
-                  value={ppgIrLedMa}
-                  onChange={e => setPpgIrLedMa(Number(e.target.value))}
-                  className="interval-slider interval-slider--ir"
-                />
-                <span className="interval-value interval-value--ir">{ppgIrLedMa} mA</span>
-              </div>
-              <div className="interval-presets">
-                {[3, 6, 12, 25, 51].map(ma => (
-                  <button
-                    key={ma}
-                    className={`preset-btn ${ppgIrLedMa === ma ? "preset-btn--active preset-btn--ir" : ""}`}
-                    onClick={() => setPpgIrLedMa(ma)}
-                  >
-                    {ma} mA
-                  </button>
-                ))}
-              </div>
-            </div>
           </section>
 
           {/* ── Actions ── */}
@@ -826,18 +798,37 @@ export default function Settings() {
           gap: 14px;
           margin-bottom: 12px;
         }
+        .interval-value {
+          font-size: 14px;
+          font-weight: 700;
+          color: #00c8ff;
+          min-width: 24px;
+          text-align: left;
+        }
+        .interval-num-input {
+          width: 64px;
+          padding: 6px 8px;
+          border-radius: 6px;
+          border: 1px solid var(--border, #e2e8f0);
+          background: var(--bg-card, #fff);
+          color: var(--text-primary, #2c3e50);
+          font-size: 14px;
+          font-weight: 700;
+          font-family: inherit;
+          text-align: right;
+        }
+        .interval-num-input:focus {
+          outline: none;
+          border-color: #00c8ff;
+          box-shadow: 0 0 0 2px rgba(0,200,255,0.12);
+        }
         .interval-slider {
           flex: 1;
           accent-color: #00c8ff;
-          height: 4px;
+          cursor: pointer;
         }
-        .interval-value {
-          font-size: 18px;
-          font-weight: 700;
-          color: #00c8ff;
-          min-width: 60px;
-          text-align: right;
-        }
+        .interval-slider--red { accent-color: #ef4444; }
+        .interval-slider--ir  { accent-color: #8b5cf6; }
         .interval-presets {
           display: flex;
           gap: 6px;
@@ -861,17 +852,23 @@ export default function Settings() {
           background: rgba(0,200,255,0.08);
           color: #00c8ff;
         }
+        .preset-btn--red.preset-btn--active {
+          border-color: #ef4444;
+          background: rgba(239,68,68,0.08);
+          color: #ef4444;
+        }
+        .preset-btn--ir.preset-btn--active {
+          border-color: #8b5cf6;
+          background: rgba(139,92,246,0.08);
+          color: #8b5cf6;
+        }
         .interval-hint {
           font-size: 11px;
           color: var(--text-muted, #94a3b8);
           line-height: 1.5;
         }
-        .interval-slider--red  { accent-color: #ef4444; }
-        .interval-slider--ir   { accent-color: #8b5cf6; }
         .interval-value--red   { color: #ef4444; }
         .interval-value--ir    { color: #8b5cf6; }
-        .preset-btn--red { border-color: #ef4444; background: rgba(239,68,68,0.08); color: #ef4444; }
-        .preset-btn--ir  { border-color: #8b5cf6; background: rgba(139,92,246,0.08); color: #8b5cf6; }
 
         /* ECG settings */
         .ecg-field-group {
@@ -989,6 +986,11 @@ export default function Settings() {
         }
         :global([data-theme="dark"]) .ecg-field-group {
           border-color: #334155;
+        }
+        :global([data-theme="dark"]) .interval-num-input {
+          background: #0f172a;
+          border-color: #334155;
+          color: #e2e8f0;
         }
       `}</style>
     </>

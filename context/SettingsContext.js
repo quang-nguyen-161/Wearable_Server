@@ -17,11 +17,13 @@ export const DEFAULT_THRESHOLDS = {
 
 export const DEFAULT_SETTINGS = {
   vitalInterval:     1000,
+  lcdInterval:       1000,
   ecgSampleFreq:     250,
   ecgPacketInterval: 200,
   ppgSampleFreq:     100,
-  ppgRedLedMa:       6,
-  ppgIrLedMa:        6,
+  ppgHrSource:       "ir", // "ir" | "red" — which LED channel drives the HR peak detector
+  periodicInterval:  10,
+  captureWindow:     5,
   thresholds:        DEFAULT_THRESHOLDS,
 };
 
@@ -46,11 +48,13 @@ export function SettingsProvider({ children }) {
 
       const settings = {
         vitalInterval:     a.vitalInterval     ?? DEFAULT_SETTINGS.vitalInterval,
+        lcdInterval:       a.lcdInterval       ?? DEFAULT_SETTINGS.lcdInterval,
         ecgSampleFreq:     a.ecgSampleFreq     ?? DEFAULT_SETTINGS.ecgSampleFreq,
         ecgPacketInterval: a.ecgPacketInterval ?? DEFAULT_SETTINGS.ecgPacketInterval,
         ppgSampleFreq:     a.ppgSampleFreq     ?? DEFAULT_SETTINGS.ppgSampleFreq,
-        ppgRedLedMa:       a.ppgRedLedMa       ?? DEFAULT_SETTINGS.ppgRedLedMa,
-        ppgIrLedMa:        a.ppgIrLedMa        ?? DEFAULT_SETTINGS.ppgIrLedMa,
+        ppgHrSource:       a.ppgHrSource       ?? DEFAULT_SETTINGS.ppgHrSource,
+        periodicInterval:  a.periodicInterval  ?? DEFAULT_SETTINGS.periodicInterval,
+        captureWindow:     a.captureWindow     ?? DEFAULT_SETTINGS.captureWindow,
         thresholds: {
           ppgHeartRate: {
             normalMin: a.ppgHr_normalMin ?? DEFAULT_THRESHOLDS.ppgHeartRate.normalMin,
