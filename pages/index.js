@@ -711,7 +711,23 @@ export default function Dashboard() {
   /* Device list */
   const [devices,          setDevices]          = useState([]);
   const [devicesLoading,   setDevicesLoading]   = useState(true);
-  const [selectedDeviceId, setSelectedDeviceId] = useState(null);
+  const [selectedDeviceId, setSelectedDeviceIdRaw] = useState(null);
+  // Restore last-viewed device from localStorage once, on mount (browser only).
+  useEffect(() => {
+    const saved = typeof window !== "undefined" && localStorage.getItem("selectedDeviceId");
+    if (saved) setSelectedDeviceIdRaw(saved);
+  }, []);
+  // Wrap the setter so every selection change is persisted automatically.
+  const setSelectedDeviceId = useCallback((idOrUpdater) => {
+    setSelectedDeviceIdRaw(prev => {
+      const next = typeof idOrUpdater === "function" ? idOrUpdater(prev) : idOrUpdater;
+      if (typeof window !== "undefined") {
+        if (next) localStorage.setItem("selectedDeviceId", next);
+        else localStorage.removeItem("selectedDeviceId");
+      }
+      return next;
+    });
+  }, []);
   const [patient,          setPatient]          = useState(null);
   const [error,            setError]            = useState(null);
   const [theme,            setTheme]            = useState("light");
@@ -823,7 +839,15 @@ export default function Dashboard() {
     try {
       const list = await getDevices(tbAuthToken);
       setDevices(list);
-      if (list.length > 0 && !selectedDeviceId) setSelectedDeviceId(list[0].id);
+      // Use the functional form so this always checks the CURRENT selection,
+      // not whatever selectedDeviceId was when fetchDevices was created.
+      // (fetchDevices is memoized on [tbAuthToken] only, so selectedDeviceId
+      // was previously a stale closure — that's why the 15s poll kept
+      // snapping you back to the first device.)
+      setSelectedDeviceId(prev => {
+        if (prev && list.some(d => d.id === prev)) return prev; // keep current/restored selection
+        return list.length > 0 ? list[0].id : prev;
+      });
       // Load showEcg + deviceMode attributes for every device in parallel
       const results = await Promise.allSettled(list.map(d => getDeviceAttributes(tbAuthToken, d.id)));
       const ecgMap  = {};
