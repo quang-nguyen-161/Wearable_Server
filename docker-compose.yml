@@ -1,0 +1,16 @@
+services:
+  frontend:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: vitalsync-frontend
+    ports:
+      - "3000:3000"
+    environment:
+      - TB_BASE_URL=http://host.docker.internal:9090
+      - TB_MQTT_BROKER_FALLBACK=mqtt://host.docker.internal:1883
+      - NEXT_PUBLIC_TB_BASE_URL=http://localhost:9090
+      - NEXT_PUBLIC_TB_WS_URL=ws://localhost:9090/api/ws/plugins/telemetry
+    restart: unless-stopped
+    extra_hosts:
+      - "host.docker.internal:host-gateway"

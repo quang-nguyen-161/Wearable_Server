@@ -25,6 +25,7 @@ import struct
 import time
 import queue
 import threading
+import argparse
 from urllib.parse import urlparse
 import urllib.request
 
@@ -66,6 +67,12 @@ NODE_LIST_ENV = os.environ.get('NODE_LIST', '')          # "Node1:e5:..,Node2:aa
 TB_NODE_NAME  = os.environ.get('TB_NODE_NAME', 'Node1')  # legacy single-node
 BLE_ADDRESS   = os.environ.get('BLE_ADDRESS',  'e5:39:e6:e4:d1:e8')
 
+# Which server to use: 'auto' (default — probe primary, fall back to local),
+# 'main'/'primary' (always use the primary/remote server), or
+# 'fallback'/'local' (always use the local/fallback server). Can be set via
+# env var or overridden with --server on the command line.
+TB_SERVER_MODE = os.environ.get('TB_SERVER_MODE', 'auto').strip().lower()
+
 # REST API discovery — finds devices whose name contains "node" (case-insensitive),
 # same convention as pages/api/devices.js, so nodes added via the dashboard's
 # "+ Node" button are picked up automatically without editing NODE_LIST.
@@ -98,19 +105,47 @@ MQTT_TOKEN   = ACCESS_TOKEN
 TB_REST_URL  = TB_REST_URL_PRIMARY
 
 
-def _select_broker():
-    """Probe the primary (old c7-2slab) MQTT broker; fall back to localhost if unreachable."""
+def _use_primary():
     global MQTT_HOST, MQTT_PORT, MQTT_TOKEN, TB_REST_URL
+    MQTT_HOST, MQTT_PORT, MQTT_TOKEN = MQTT_HOST_PRIMARY, MQTT_PORT_PRIMARY, ACCESS_TOKEN
+    TB_REST_URL = TB_REST_URL_PRIMARY
+
+
+def _use_fallback():
+    global MQTT_HOST, MQTT_PORT, MQTT_TOKEN, TB_REST_URL
+    MQTT_HOST, MQTT_PORT, MQTT_TOKEN = MQTT_HOST_FALLBACK, MQTT_PORT_FALLBACK, ACCESS_TOKEN_FALLBACK
+    TB_REST_URL = TB_REST_URL_FALLBACK
+
+
+def _select_broker(mode=None):
+    """Pick the MQTT broker (+ matching REST URL) to use.
+
+    mode:
+      'auto' (default)      — probe the primary server, fall back to local if unreachable.
+      'main' / 'primary'    — always use the primary/remote server, no probing.
+      'fallback' / 'local'  — always use the local/fallback server, no probing.
+    """
+    mode = (mode or TB_SERVER_MODE or 'auto').strip().lower()
+
+    if mode in ('main', 'primary', 'remote', 'server'):
+        _use_primary()
+        print(f'[MQTT] Forced to primary broker {MQTT_HOST}:{MQTT_PORT} (--server={mode})')
+        return
+
+    if mode in ('fallback', 'local'):
+        _use_fallback()
+        print(f'[MQTT] Forced to fallback broker {MQTT_HOST}:{MQTT_PORT} (--server={mode})')
+        return
+
+    # 'auto' (or anything unrecognized) — probe primary, fall back if unreachable.
     try:
         with socket.create_connection((MQTT_HOST_PRIMARY, MQTT_PORT_PRIMARY), timeout=2.0):
-            MQTT_HOST, MQTT_PORT, MQTT_TOKEN = MQTT_HOST_PRIMARY, MQTT_PORT_PRIMARY, ACCESS_TOKEN
-            TB_REST_URL = TB_REST_URL_PRIMARY
+            _use_primary()
             print(f'[MQTT] Using primary broker {MQTT_HOST}:{MQTT_PORT}')
             return
     except OSError:
         pass
-    MQTT_HOST, MQTT_PORT, MQTT_TOKEN = MQTT_HOST_FALLBACK, MQTT_PORT_FALLBACK, ACCESS_TOKEN_FALLBACK
-    TB_REST_URL = TB_REST_URL_FALLBACK
+    _use_fallback()
     print(f'[MQTT] Primary broker {MQTT_HOST_PRIMARY}:{MQTT_PORT_PRIMARY} unreachable — '
           f'falling back to {MQTT_HOST}:{MQTT_PORT}')
 
@@ -1113,11 +1148,22 @@ def node_worker(node: NodeState, adapter):
 def main():
     global nodes
 
+    parser = argparse.ArgumentParser(description='BLE ECG Gateway -> ThingsBoard')
+    parser.add_argument(
+        '--server', choices=['auto', 'main', 'fallback'], default=None,
+        help="Which ThingsBoard server to use: 'auto' probes the primary server and "
+             "falls back to local if unreachable (default); 'main' always uses the "
+             "primary/remote server; 'fallback' always uses the local server. "
+             "Overrides the TB_SERVER_MODE env var / .env.local setting."
+    )
+    args = parser.parse_args()
+    server_mode = args.server or TB_SERVER_MODE
+
     if not ACCESS_TOKEN:
         print('ERROR: TB_GATEWAY_ACCESS_TOKEN must be set in .env.local')
         return
 
-    _select_broker()  # also picks the matching REST URL for node discovery below
+    _select_broker(server_mode)  # also picks the matching REST URL for node discovery below
     nodes = _parse_node_list()
 
     print('=' * 49)
