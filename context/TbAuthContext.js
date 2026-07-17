@@ -13,9 +13,33 @@ const EXPIRY_KEY = "tb_token_expiry";
 
 const TbAuthContext = createContext(null);
 
+// ThingsBoard JWTs are standard base64url JWTs — decode the payload locally,
+// no network call needed. Carries: authority ("TENANT_ADMIN" | "CUSTOMER_USER"
+// | "SYS_ADMIN"), userId, customerId, tenantId, etc.
+function decodeTbJwt(jwt) {
+  try {
+    const payload = jwt.split(".")[1];
+    const json = atob(payload.replace(/-/g, "+").replace(/_/g, "/"));
+    const claims = JSON.parse(decodeURIComponent(escape(json)));
+    const scopes = Array.isArray(claims.scopes) ? claims.scopes : [];
+    return {
+      authority:  scopes[0] ?? null,       // "CUSTOMER_USER" | "TENANT_ADMIN" | "SYS_ADMIN"
+      userId:     claims.userId     ?? null,
+      customerId: claims.customerId ?? null,
+    };
+  } catch {
+    return { authority: null, userId: null, customerId: null };
+  }
+}
+
+// TB uses this all-zero-ish UUID to mean "no customer" (e.g. for tenant admins)
+const NULL_CUSTOMER_ID = "13814000-1dd2-11b2-8080-808080808080";
+
 export function TbAuthProvider({ children }) {
-  const [token,   setToken]   = useState(null);
-  const [loading, setLoading] = useState(true);
+  const [token,      setToken]      = useState(null);
+  const [authority,  setAuthority]  = useState(null);
+  const [customerId, setCustomerId] = useState(null);
+  const [loading,    setLoading]    = useState(true);
   const router = useRouter();
 
   // Restore token from sessionStorage on first load
@@ -24,6 +48,9 @@ export function TbAuthProvider({ children }) {
     const expiry = sessionStorage.getItem(EXPIRY_KEY);
     if (saved && expiry && Date.now() < Number(expiry)) {
       setToken(saved);
+      const claims = decodeTbJwt(saved);
+      setAuthority(claims.authority);
+      setCustomerId(claims.customerId && claims.customerId !== NULL_CUSTOMER_ID ? claims.customerId : null);
     }
     setLoading(false);
   }, []);
@@ -47,6 +74,9 @@ export function TbAuthProvider({ children }) {
     sessionStorage.setItem(TOKEN_KEY,  jwt);
     sessionStorage.setItem(EXPIRY_KEY, String(expiresAt));
     setToken(jwt);
+    const claims = decodeTbJwt(jwt);
+    setAuthority(claims.authority);
+    setCustomerId(claims.customerId && claims.customerId !== NULL_CUSTOMER_ID ? claims.customerId : null);
     return jwt;
   }, []);
 
@@ -54,11 +84,13 @@ export function TbAuthProvider({ children }) {
     sessionStorage.removeItem(TOKEN_KEY);
     sessionStorage.removeItem(EXPIRY_KEY);
     setToken(null);
+    setAuthority(null);
+    setCustomerId(null);
     router.push("/login");
   }, [router]);
 
   return (
-    <TbAuthContext.Provider value={{ token, login, logout, loading }}>
+    <TbAuthContext.Provider value={{ token, authority, customerId, login, logout, loading }}>
       {children}
     </TbAuthContext.Provider>
   );

@@ -753,7 +753,7 @@ export default function Dashboard() {
   const [deviceModeMap,    setDeviceModeMap]    = useState({});
 
   /* ── TB token for WebSocket — use browser login token directly ── */
-  const { token: tbAuthToken, logout } = useTbAuth();
+  const { token: tbAuthToken, authority: tbAuthority, customerId: tbCustomerId, logout } = useTbAuth();
   useEffect(() => {
     if (tbAuthToken) setTbToken(tbAuthToken);
   }, [tbAuthToken]);
@@ -837,7 +837,7 @@ export default function Dashboard() {
     // for connect/disconnect updates the device cards in place.
     if (!hasDevicesRef.current) setDevicesLoading(true);
     try {
-      const list = await getDevices(tbAuthToken);
+      const list = await getDevices(tbAuthToken, { authority: tbAuthority, customerId: tbCustomerId });
       setDevices(list);
       // Use the functional form so this always checks the CURRENT selection,
       // not whatever selectedDeviceId was when fetchDevices was created.
@@ -868,7 +868,7 @@ export default function Dashboard() {
     } finally {
       setDevicesLoading(false);
     }
-  }, [tbAuthToken]);
+  }, [tbAuthToken, tbAuthority, tbCustomerId]);
 
   /* ── Toggle ECG visibility for a device ── */
   const handleToggleEcg = useCallback(async (deviceId, currentlyEnabled) => {
