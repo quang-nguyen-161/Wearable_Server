@@ -4,12 +4,29 @@ import { useRouter } from "next/router";
 import Head from "next/head";
 import { useTbAuth } from "../context/TbAuthContext";
 
-const TB_URL = process.env.NEXT_PUBLIC_TB_BASE_URL;
+// Backend errors can include internal API paths/status codes — never show
+// those directly to the user. Map them to generic, user-facing messages.
+function friendlyLoginError(err) {
+  const msg = String(err?.message || "");
+  if (/\(401\)/.test(msg) || /invalid/i.test(msg) || /credentials/i.test(msg)) {
+    return "Incorrect email or password.";
+  }
+  if (/\(403\)/.test(msg)) {
+    return "Your account doesn't have access. Contact your administrator.";
+  }
+  if (/\(4\d\d\)/.test(msg)) {
+    return "Couldn't sign in. Please check your details and try again.";
+  }
+  if (/failed to fetch|network|timeout/i.test(msg)) {
+    return "Couldn't reach the server. Check your connection and try again.";
+  }
+  return "Something went wrong signing in. Please try again.";
+}
 
 export default function LoginPage() {
   const { login } = useTbAuth();
   const router    = useRouter();
-  const [username, setUsername] = useState("tenant@thingsboard.org");
+  const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
   const [error,    setError]    = useState(null);
   const [loading,  setLoading]  = useState(false);
@@ -22,7 +39,8 @@ export default function LoginPage() {
       await login(username, password);
       router.push("/");
     } catch (err) {
-      setError(err.message);
+      console.error("[login] auth failed:", err);
+      setError(friendlyLoginError(err));
     } finally {
       setLoading(false);
     }
@@ -70,28 +88,6 @@ export default function LoginPage() {
             </div>
           </div>
 
-          <div style={{ fontSize: 18, fontWeight: 700, color: "var(--text-primary, #1e293b)",
-            marginBottom: 4 }}>Sign in</div>
-          <div style={{ fontSize: 12, color: "var(--text-muted, #94a3b8)", marginBottom: 24 }}>
-            ThingsBoard credentials for{" "}
-            <a href={TB_URL} target="_blank" rel="noreferrer"
-              style={{ color: "#00c8ff", textDecoration: "none" }}>
-              {TB_URL?.replace("https://", "").replace("http://", "")}
-            </a>
-          </div>
-
-          {/* Cloudflare hint */}
-          <div style={{
-            background: "rgba(245,158,11,0.08)", border: "1px solid rgba(245,158,11,0.2)",
-            borderRadius: 8, padding: "10px 12px", marginBottom: 20,
-            fontSize: 11, color: "var(--text-muted, #64748b)", lineHeight: 1.5,
-          }}>
-            <strong style={{ color: "#f59e0b" }}>First time?</strong> Open{" "}
-            <a href={TB_URL} target="_blank" rel="noreferrer"
-              style={{ color: "#f59e0b" }}>the server</a>{" "}
-            in a new tab to pass any security check, then come back and sign in.
-          </div>
-
           <form onSubmit={handleSubmit} style={{ display: "flex", flexDirection: "column", gap: 14 }}>
             <div>
               <label style={{ fontSize: 11, fontWeight: 700, letterSpacing: "0.08em",
@@ -101,6 +97,7 @@ export default function LoginPage() {
               <input
                 type="email" value={username} onChange={e => setUsername(e.target.value)}
                 required autoFocus
+                placeholder="you@example.com"
                 style={{
                   width: "100%", boxSizing: "border-box",
                   padding: "10px 12px", borderRadius: 8,
