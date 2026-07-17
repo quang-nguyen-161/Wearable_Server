@@ -10,6 +10,7 @@ import VitalHistoryModal from "../components/VitalHistoryModal";
 import OverviewGrid from "../components/OverviewGrid";
 import PrintModal from "../components/PrintModal";
 import OtaModal from "../components/OtaModal";
+import AssignModal from "../components/AssignModal";
 import { useNotifications } from "../hooks/useNotifications";
 import { useTrends } from "../hooks/useTrends";
 import { useSettings, SettingsContext } from "../context/SettingsContext";
@@ -750,10 +751,11 @@ export default function Dashboard() {
   const [vitalsMap,        setVitalsMap]        = useState({}); // { [deviceId]: vitals }
   const [notificationsOn,  setNotificationsOn]  = useState(true);
   const [addNodeModal,     setAddNodeModal]     = useState(false);
+  const [assignModal,      setAssignModal]      = useState(false);
   const [deviceModeMap,    setDeviceModeMap]    = useState({});
 
   /* ── TB token for WebSocket — use browser login token directly ── */
-  const { token: tbAuthToken, authority: tbAuthority, customerId: tbCustomerId, logout } = useTbAuth();
+  const { token: tbAuthToken, authority: tbAuthority, customerId: tbCustomerId, username: tbUsername, logout } = useTbAuth();
   useEffect(() => {
     if (tbAuthToken) setTbToken(tbAuthToken);
   }, [tbAuthToken]);
@@ -1000,6 +1002,38 @@ export default function Dashboard() {
             </div>
           </div>
 
+          {tbUsername && (
+            <div style={{ padding: "12px 16px", borderBottom: "0.5px solid var(--border,#e2e8f0)" }}>
+              <div style={{
+                fontSize: 10, fontWeight: 700, letterSpacing: "0.1em",
+                color: "var(--text-muted,#94a3b8)", marginBottom: 6,
+              }}>
+                SIGNED IN AS
+              </div>
+              <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8 }}>
+                <span
+                  title={tbUsername}
+                  style={{
+                    fontSize: 13, fontWeight: 700, color: "var(--text-primary,#1e293b)",
+                    overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap",
+                  }}
+                >
+                  {tbUsername}
+                </span>
+                <span style={{
+                  flexShrink: 0, fontSize: 10, fontWeight: 700, letterSpacing: "0.04em",
+                  padding: "2px 8px", borderRadius: 20,
+                  background: (tbAuthority === "TENANT_ADMIN" || tbAuthority === "SYS_ADMIN")
+                    ? "rgba(0,200,255,0.15)" : "rgba(148,163,184,0.15)",
+                  color: (tbAuthority === "TENANT_ADMIN" || tbAuthority === "SYS_ADMIN")
+                    ? "#0088aa" : "#64748b",
+                }}>
+                  {(tbAuthority === "TENANT_ADMIN" || tbAuthority === "SYS_ADMIN") ? "Admin" : tbAuthority === "CUSTOMER_USER" ? "Client" : "—"}
+                </span>
+              </div>
+            </div>
+          )}
+
           <nav className="sidebar-nav">
             <div className="sidebar-section-label">FEATURES</div>
 
@@ -1043,6 +1077,16 @@ export default function Dashboard() {
               <span className="nav-icon">⚙</span>
               <span className="nav-label">Settings</span>
             </a>
+
+            {(tbAuthority === "TENANT_ADMIN" || tbAuthority === "SYS_ADMIN") && (
+              <button
+                className="nav-item"
+                onClick={() => setAssignModal(true)}
+              >
+                <span className="nav-icon">➕</span>
+                <span className="nav-label">Assign User</span>
+              </button>
+            )}
           </nav>
 
           <div className="sidebar-bottom">
@@ -1495,6 +1539,16 @@ export default function Dashboard() {
         <PrintModal
           devices={devices}
           onClose={() => setPrintModal(false)}
+        />
+      )}
+
+      {/* ── Assign User modal (admin only) ── */}
+      {assignModal && (
+        <AssignModal
+          token={tbAuthToken}
+          devices={devices}
+          onClose={() => setAssignModal(false)}
+          onAssigned={fetchDevices}
         />
       )}
 

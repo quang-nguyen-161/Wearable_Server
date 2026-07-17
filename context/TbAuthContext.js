@@ -21,14 +21,16 @@ function decodeTbJwt(jwt) {
     const payload = jwt.split(".")[1];
     const json = atob(payload.replace(/-/g, "+").replace(/_/g, "/"));
     const claims = JSON.parse(decodeURIComponent(escape(json)));
+    // TB puts the role in a "scopes" array (e.g. ["CUSTOMER_USER"]), not "authority"
     const scopes = Array.isArray(claims.scopes) ? claims.scopes : [];
     return {
-      authority:  scopes[0] ?? null,       // "CUSTOMER_USER" | "TENANT_ADMIN" | "SYS_ADMIN"
-      userId:     claims.userId     ?? null,
-      customerId: claims.customerId ?? null,
+      authority:  scopes[0]      ?? null,
+      userId:     claims.userId  ?? null,
+      customerId: claims.customerId ?? null, // "13814000-1dd2-11b2-8080-808080808080" = "not set" sentinel
+      username:   claims.sub     ?? null,     // TB stores email/username in "sub"
     };
   } catch {
-    return { authority: null, userId: null, customerId: null };
+    return { authority: null, userId: null, customerId: null, username: null };
   }
 }
 
@@ -39,6 +41,7 @@ export function TbAuthProvider({ children }) {
   const [token,      setToken]      = useState(null);
   const [authority,  setAuthority]  = useState(null);
   const [customerId, setCustomerId] = useState(null);
+  const [username,   setUsername]   = useState(null);
   const [loading,    setLoading]    = useState(true);
   const router = useRouter();
 
@@ -51,6 +54,7 @@ export function TbAuthProvider({ children }) {
       const claims = decodeTbJwt(saved);
       setAuthority(claims.authority);
       setCustomerId(claims.customerId && claims.customerId !== NULL_CUSTOMER_ID ? claims.customerId : null);
+      setUsername(claims.username);
     }
     setLoading(false);
   }, []);
@@ -77,6 +81,7 @@ export function TbAuthProvider({ children }) {
     const claims = decodeTbJwt(jwt);
     setAuthority(claims.authority);
     setCustomerId(claims.customerId && claims.customerId !== NULL_CUSTOMER_ID ? claims.customerId : null);
+    setUsername(claims.username);
     return jwt;
   }, []);
 
@@ -86,11 +91,12 @@ export function TbAuthProvider({ children }) {
     setToken(null);
     setAuthority(null);
     setCustomerId(null);
+    setUsername(null);
     router.push("/login");
   }, [router]);
 
   return (
-    <TbAuthContext.Provider value={{ token, authority, customerId, login, logout, loading }}>
+    <TbAuthContext.Provider value={{ token, authority, customerId, username, login, logout, loading }}>
       {children}
     </TbAuthContext.Provider>
   );
