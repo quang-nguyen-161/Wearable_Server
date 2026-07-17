@@ -21,7 +21,7 @@ export const DEFAULT_SETTINGS = {
   ecgSampleFreq:     250,
   ecgPacketInterval: 200,
   ppgSampleFreq:     100,
-  ppgHrSource:       "ir", // "ir" | "red" — which LED channel drives the HR peak detector
+  ppgHrSource:       "red", // "ir" | "red" — which LED channel drives the HR peak detector
   periodicInterval:  10,
   captureWindow:     5,
   thresholds:        DEFAULT_THRESHOLDS,

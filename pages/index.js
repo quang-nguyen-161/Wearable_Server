@@ -1175,26 +1175,30 @@ export default function Dashboard() {
                     >
                       ⤢
                     </button>
-                    <button
-                      className="device-detail-btn"
-                      onClick={(e) => { e.stopPropagation(); handleDeleteNode(device.id, device.name); }}
-                      title="Delete node"
-                      style={{ top: 26, color: "#e53e3e", background: "rgba(229,62,62,0.12)" }}
-                    >
-                      ✕
-                    </button>
+                    {(tbAuthority === "TENANT_ADMIN" || tbAuthority === "SYS_ADMIN") && (
+                      <button
+                        className="device-detail-btn"
+                        onClick={(e) => { e.stopPropagation(); handleDeleteNode(device.id, device.name); }}
+                        title="Delete node"
+                        style={{ top: 26, color: "#e53e3e", background: "rgba(229,62,62,0.12)" }}
+                      >
+                        ✕
+                      </button>
+                    )}
                   </div>
                 );
               })
             )}
           </div>
-          <button
-            className="add-node-btn"
-            onClick={() => setAddNodeModal(true)}
-            title="Add new node"
-          >
-            + Node
-          </button>
+          {(tbAuthority === "TENANT_ADMIN" || tbAuthority === "SYS_ADMIN") && (
+            <button
+              className="add-node-btn"
+              onClick={() => setAddNodeModal(true)}
+              title="Add new node"
+            >
+              + Node
+            </button>
+          )}
         </div>
 
         {/* ── Patient bar ── */}

@@ -36,7 +36,7 @@ const DEFAULT_LCD_INTERVAL        = 1000; // ms — CONTINUOUS mode LCD dashboar
 const DEFAULT_ECG_SAMPLE_FREQ     = 250;  // Hz — ADC sampling rate
 const DEFAULT_ECG_PACKET_INTERVAL = 200;  // ms — how often ECG packets are sent
 const DEFAULT_PPG_SAMPLE_FREQ     = 100;  // Hz — MAX30102 sample rate
-const DEFAULT_PPG_HR_SOURCE       = "ir"; // "ir" | "red" — LED channel used for HR peak detection
+const DEFAULT_PPG_HR_SOURCE       = "red"; // "ir" | "red" — LED channel used for HR peak detection
 
 const DEFAULT_DEVICE_MODE       = 0;  // 0 Continuous / 1 Periodic  (ECG is a separate flag, toggled on the dashboard)
 const DEFAULT_PERIODIC_INTERVAL = 10; // s — wake-to-wake interval (5–60)
