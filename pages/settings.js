@@ -56,7 +56,7 @@ const clamp = (val, min, max) => Math.min(max, Math.max(min, val));
 // ── Settings page ────────────────────────────────────────────────────────────
 export default function Settings() {
   const router = useRouter();
-  const { token } = useTbAuth();
+  const { token, authority, customerId } = useTbAuth();
 
   const [devices,            setDevices]            = useState([]);
   const [selectedDeviceId,   setSelectedDeviceId]   = useState(null);
@@ -86,14 +86,14 @@ export default function Settings() {
   // ── Load device list ───────────────────────────────────────────────────
   useEffect(() => {
     if (!token) return;
-    getDevices(token)
+    getDevices(token, { authority, customerId })
       .then(list => {
         setDevices(list);
         const qId = router.query.deviceId;
         setSelectedDeviceId(qId && list.find(d => d.id === qId) ? qId : list[0]?.id ?? null);
       })
       .catch(console.error);
-  }, [token, router.query.deviceId]);
+  }, [token, authority, customerId, router.query.deviceId]);
 
   // ── Load existing attributes when device changes ────────────────────────
   const loadAttributes = useCallback(async (deviceId) => {
