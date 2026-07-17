@@ -6,7 +6,8 @@
 // - "Edit Existing": pick an existing client (Customer), see which nodes are
 //   currently assigned, and add/remove nodes for them.
 //
-// Permissions section is a placeholder — not wired up yet in either tab.
+// Permissions (edit thresholds / intervals / modes / sensors) are stored as
+// SERVER_SCOPE attributes on the Customer entity — see lib/permissions.js.
 
 import { useState, useEffect, useCallback } from "react";
 import {
@@ -19,7 +20,10 @@ import {
   getCustomers,
   getCustomerDeviceIds,
   deleteCustomer,
+  getCustomerAttributes,
+  saveCustomerAttributes,
 } from "../lib/tbBrowserClient";
+import { PERMISSION_DEFS, DEFAULT_PERMISSIONS, parsePermissions, toAttributePayload } from "../lib/permissions";
 
 function extractActivateToken(link) {
   try {
@@ -88,6 +92,7 @@ export default function AssignModal({ token, devices, onClose, onAssigned }) {
   const [username,      setUsername]      = useState("");
   const [password,      setPassword]      = useState("");
   const [selectedNodes, setSelectedNodes] = useState([]);
+  const [permissions,   setPermissions]   = useState(DEFAULT_PERMISSIONS);
 
   // ── Edit-tab state ────────────────────────────────────────────────────
   const [customers,          setCustomers]          = useState([]);
@@ -95,9 +100,14 @@ export default function AssignModal({ token, devices, onClose, onAssigned }) {
   const [selectedCustomerId, setSelectedCustomerId] = useState("");
   const [editSelectedNodes,  setEditSelectedNodes]  = useState([]);
   const [originalNodes,      setOriginalNodes]      = useState([]);
+  const [editPermissions,    setEditPermissions]    = useState(DEFAULT_PERMISSIONS);
+  const [originalPermissions,setOriginalPermissions]= useState(DEFAULT_PERMISSIONS);
   const [editLoading,        setEditLoading]        = useState(false);
   const [confirmDelete,      setConfirmDelete]      = useState(false);
   const [deleting,           setDeleting]           = useState(false);
+
+  const togglePermission     = (key) => setPermissions(prev => ({ ...prev, [key]: !prev[key] }));
+  const toggleEditPermission = (key) => setEditPermissions(prev => ({ ...prev, [key]: !prev[key] }));
 
   useEffect(() => {
     const fn = e => { if (e.key === "Escape") onClose(); };
@@ -123,13 +133,21 @@ export default function AssignModal({ token, devices, onClose, onAssigned }) {
     setMsg(null);
     setEditSelectedNodes([]);
     setOriginalNodes([]);
+    setEditPermissions(DEFAULT_PERMISSIONS);
+    setOriginalPermissions(DEFAULT_PERMISSIONS);
     setConfirmDelete(false);
     if (!customerId) return;
     setEditLoading(true);
     try {
-      const deviceIds = await getCustomerDeviceIds(token, customerId);
+      const [deviceIds, attrs] = await Promise.all([
+        getCustomerDeviceIds(token, customerId),
+        getCustomerAttributes(token, customerId),
+      ]);
       setEditSelectedNodes(deviceIds);
       setOriginalNodes(deviceIds);
+      const perms = parsePermissions(attrs);
+      setEditPermissions(perms);
+      setOriginalPermissions(perms);
     } catch (e) {
       setMsg({ type: "err", text: e.message });
     } finally {
@@ -166,6 +184,9 @@ export default function AssignModal({ token, devices, onClose, onAssigned }) {
         await assignDeviceToCustomer(token, customerId, deviceId);
       }
 
+      setMsg({ type: "info", text: "Saving permissions…" });
+      await saveCustomerAttributes(token, customerId, toAttributePayload(permissions));
+
       setMsg({ type: "ok", text: `"${email}" created and assigned ${selectedNodes.length} node(s) ✓` });
       onAssigned?.();
       setTimeout(onClose, 900);
@@ -182,7 +203,8 @@ export default function AssignModal({ token, devices, onClose, onAssigned }) {
 
     const toAdd    = editSelectedNodes.filter(id => !originalNodes.includes(id));
     const toRemove = originalNodes.filter(id => !editSelectedNodes.includes(id));
-    if (toAdd.length === 0 && toRemove.length === 0) {
+    const permsChanged = PERMISSION_DEFS.some(({ key }) => editPermissions[key] !== originalPermissions[key]);
+    if (toAdd.length === 0 && toRemove.length === 0 && !permsChanged) {
       setMsg({ type: "err", text: "No changes to save." });
       return;
     }
@@ -203,9 +225,19 @@ export default function AssignModal({ token, devices, onClose, onAssigned }) {
         }
       }
 
+      if (permsChanged) {
+        setMsg({ type: "info", text: "Saving permissions…" });
+        await saveCustomerAttributes(token, selectedCustomerId, toAttributePayload(editPermissions));
+      }
+
       setOriginalNodes(editSelectedNodes);
+      setOriginalPermissions(editPermissions);
       const label = customers.find(c => c.id === selectedCustomerId)?.title ?? "client";
-      setMsg({ type: "ok", text: `"${label}" updated — ${toAdd.length} added, ${toRemove.length} removed ✓` });
+      const parts = [];
+      if (toAdd.length)    parts.push(`${toAdd.length} added`);
+      if (toRemove.length) parts.push(`${toRemove.length} removed`);
+      if (permsChanged)    parts.push("permissions updated");
+      setMsg({ type: "ok", text: `"${label}" updated — ${parts.join(", ")} ✓` });
       onAssigned?.();
       setTimeout(onClose, 900);
     } catch (e) {
@@ -356,17 +388,31 @@ export default function AssignModal({ token, devices, onClose, onAssigned }) {
             )}
           </div>
 
-          {/* Permissions (placeholder, not functional yet) */}
+          {/* Permissions — which Settings-page sections this client can edit */}
           <div>
-            <div style={sectionLabelStyle}>PERMISSIONS <span style={{ opacity: 0.6, fontWeight: 500 }}>(coming soon)</span></div>
-            <div style={{ display: "flex", flexDirection: "column", gap: 6, opacity: 0.5 }}>
-              {["View vitals", "Edit thresholds", "Manage nodes", "Print / export reports"].map(perm => (
-                <label key={perm} style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 13,
-                  color: "var(--text-primary,#1e293b)", cursor: "not-allowed" }}>
-                  <input type="checkbox" disabled />
-                  {perm}
-                </label>
-              ))}
+            <div style={sectionLabelStyle}>PERMISSIONS</div>
+            <div style={{ display: "flex", flexDirection: "column", gap: 6,
+              opacity: (isEdit && !selectedCustomerId) ? 0.5 : 1 }}>
+              {PERMISSION_DEFS.map(({ key, label, hint }) => {
+                const checked = isEdit ? editPermissions[key] : permissions[key];
+                const disabled = isEdit && (!selectedCustomerId || editLoading);
+                return (
+                  <label key={key} style={{ display: "flex", alignItems: "flex-start", gap: 8, fontSize: 13,
+                    color: "var(--text-primary,#1e293b)", cursor: disabled ? "not-allowed" : "pointer" }}>
+                    <input
+                      type="checkbox"
+                      checked={checked}
+                      disabled={disabled}
+                      onChange={() => isEdit ? toggleEditPermission(key) : togglePermission(key)}
+                      style={{ marginTop: 2 }}
+                    />
+                    <span>
+                      <div style={{ fontWeight: 600 }}>{label}</div>
+                      <div style={{ fontSize: 11, color: "var(--text-muted,#94a3b8)" }}>{hint}</div>
+                    </span>
+                  </label>
+                );
+              })}
             </div>
           </div>
 

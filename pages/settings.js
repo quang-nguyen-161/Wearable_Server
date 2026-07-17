@@ -14,6 +14,7 @@ import Link from "next/link";
 import { useSettings } from "../context/SettingsContext";
 import { useTbAuth } from "../context/TbAuthContext";
 import { getDevices, getDeviceAttributes, saveDeviceAttributes } from "../lib/tbBrowserClient";
+import { usePermissions } from "../lib/usePermissions";
 
 // ── Defaults ────────────────────────────────────────────────────────────────
 const DEFAULT_THRESHOLDS = {
@@ -57,6 +58,7 @@ const clamp = (val, min, max) => Math.min(max, Math.max(min, val));
 export default function Settings() {
   const router = useRouter();
   const { token, authority, customerId } = useTbAuth();
+  const { permissions: perm } = usePermissions();
 
   const [devices,            setDevices]            = useState([]);
   const [selectedDeviceId,   setSelectedDeviceId]   = useState(null);
@@ -276,7 +278,16 @@ export default function Settings() {
             {loading && <div className="loading-label">Loading saved settings…</div>}
           </section>
 
+          {!perm.editThresholds && !perm.editIntervals && !perm.editModes && !perm.editSensors && (
+            <section className="settings-section">
+              <div className="section-sub" style={{ marginBottom: 0 }}>
+                Your account doesn't have permission to edit any settings on this node. Contact your administrator if you believe this is a mistake.
+              </div>
+            </section>
+          )}
+
           {/* ── Vital thresholds ── */}
+          {perm.editThresholds && (
           <section className="settings-section">
             <div className="section-title">VITAL THRESHOLDS</div>
             <div className="section-sub">
@@ -349,8 +360,10 @@ export default function Settings() {
               );
             })}
           </section>
+          )}
 
           {/* ── Operating mode ── */}
+          {perm.editModes && (
           <section className="settings-section">
             <div className="section-title">OPERATING MODE</div>
             <div className="section-sub">
@@ -434,8 +447,10 @@ export default function Settings() {
               </>
             )}
           </section>
+          )}
 
           {/* ── Vital interval ── */}
+          {perm.editIntervals && (
           <section className="settings-section">
             <div className="section-title">VITAL INTERVAL</div>
             <div className="section-sub">
@@ -452,8 +467,11 @@ export default function Settings() {
               <span className="interval-value">s</span>
             </div>
           </section>
+          )}
 
           {/* ── ECG settings ── */}
+          {perm.editSensors && (
+          <>
           <section className="settings-section">
             <div className="section-title">ECG SETTINGS</div>
             <div className="section-sub">
@@ -582,6 +600,8 @@ export default function Settings() {
             </div>
 
           </section>
+          </>
+          )}
 
           {/* ── Actions ── */}
           <div className="settings-actions">
