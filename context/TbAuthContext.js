@@ -55,33 +55,63 @@ export function TbAuthProvider({ children }) {
       setAuthority(claims.authority);
       setCustomerId(claims.customerId && claims.customerId !== NULL_CUSTOMER_ID ? claims.customerId : null);
       setUsername(claims.username);
+      setLoading(false);
+    } else {
+      sessionStorage.removeItem(TOKEN_KEY);
+      sessionStorage.removeItem(EXPIRY_KEY);
+      setToken(null);
+      setLoading(false);
     }
-    setLoading(false);
   }, []);
 
-  const login = useCallback(async (username, password) => {
-    const res = await fetch(`${TB_URL}/api/auth/login`, {
-      method:  "POST",
-      headers: { "Content-Type": "application/json" },
-      body:    JSON.stringify({ username, password }),
-    });
-    if (!res.ok) {
-      const text = await res.text();
-      // Cloudflare challenge returns HTML — give a clear message
-      const msg = text.includes("DOCTYPE")
-        ? "Cannot reach the server. Open the server URL in a new tab first, then try again."
-        : `Login failed (${res.status})`;
-      throw new Error(msg);
+  const login = useCallback(async (username, password, isDemo = false) => {
+    let jwt = null;
+
+    if (isDemo) {
+      // Offline Demo Mode: acquire local scoped token
+      const localRes = await fetch("/api/auth/token");
+      if (!localRes.ok) throw new Error("Could not initialize demo session.");
+      const localData = await localRes.json();
+      jwt = localData.token;
+      username = "demo_doctor";
+    } else {
+      if (!TB_URL || TB_URL.includes("your-tb-host")) {
+        throw new Error("ThingsBoard URL is not configured. Check NEXT_PUBLIC_TB_BASE_URL.");
+      }
+
+      const res = await fetch(`${TB_URL}/api/auth/login`, {
+        method:  "POST",
+        headers: { "Content-Type": "application/json" },
+        body:    JSON.stringify({ username, password }),
+      });
+
+      if (!res.ok) {
+        const errJson = await res.json().catch(() => ({}));
+        if (res.status === 401) {
+          throw new Error("Incorrect email or password.");
+        } else if (res.status === 403) {
+          throw new Error("Account does not have permission to access ThingsBoard.");
+        } else {
+          throw new Error(errJson.message || `Sign in failed (HTTP ${res.status})`);
+        }
+      }
+
+      const data = await res.json();
+      jwt = data.token;
     }
-    const { token: jwt } = await res.json();
-    const expiresAt = Date.now() + 2.5 * 60 * 60 * 1000; // TB tokens last ~2.5h
+
+    if (!jwt) {
+      throw new Error("Login failed. No token received from server.");
+    }
+
+    const expiresAt = Date.now() + 2.5 * 60 * 60 * 1000;
     sessionStorage.setItem(TOKEN_KEY,  jwt);
     sessionStorage.setItem(EXPIRY_KEY, String(expiresAt));
     setToken(jwt);
     const claims = decodeTbJwt(jwt);
-    setAuthority(claims.authority);
+    setAuthority(claims.authority || "CUSTOMER_USER");
     setCustomerId(claims.customerId && claims.customerId !== NULL_CUSTOMER_ID ? claims.customerId : null);
-    setUsername(claims.username);
+    setUsername(username || claims.username || "doctor_demo");
     return jwt;
   }, []);
 

@@ -1,0 +1,32 @@
+{
+  "fixtures": {
+    "tenantId": "tenant-med-01",
+    "watchMac": "E4:5F:01:23:45:67",
+    "patient1": {
+      "patientId": "p-uuid-001",
+      "name": "Le Van C",
+      "mrn": "MRN-001"
+    },
+    "patient2": {
+      "patientId": "p-uuid-002",
+      "name": "Pham Thi D",
+      "mrn": "MRN-002"
+    },
+    "createRequest": {
+      "watchMac": "E4:5F:01:23:45:67",
+      "patientId": "p-uuid-001",
+      "validFrom": 1700000000000
+    },
+    "reassignRequest": {
+      "watchMac": "E4:5F:01:23:45:67",
+      "patientId": "p-uuid-002",
+      "validFrom": 1700000060000,
+      "replacesAssignmentId": "as-initial-001",
+      "expectedVersion": 1
+    },
+    "closeRequest": {
+      "validTo": 1700000060000,
+      "expectedVersion": 1
+    }
+  }
+}

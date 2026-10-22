@@ -8,19 +8,19 @@ import { useTbAuth } from "../context/TbAuthContext";
 // those directly to the user. Map them to generic, user-facing messages.
 function friendlyLoginError(err) {
   const msg = String(err?.message || "");
-  if (/\(401\)/.test(msg) || /invalid/i.test(msg) || /credentials/i.test(msg)) {
+  if (/Incorrect email or password/i.test(msg)) {
     return "Incorrect email or password.";
   }
-  if (/\(403\)/.test(msg)) {
+  if (/\(401\)/.test(msg) || /invalid/i.test(msg) || /credentials/i.test(msg) || /authentication failed/i.test(msg)) {
+    return "Incorrect email or password.";
+  }
+  if (/\(403\)/.test(msg) || /permission/i.test(msg)) {
     return "Your account doesn't have access. Contact your administrator.";
   }
-  if (/\(4\d\d\)/.test(msg)) {
-    return "Couldn't sign in. Please check your details and try again.";
-  }
   if (/failed to fetch|network|timeout/i.test(msg)) {
-    return "Couldn't reach the server. Check your connection and try again.";
+    return "Couldn't reach ThingsBoard server. Check connection.";
   }
-  return "Something went wrong signing in. Please try again.";
+  return msg || "Something went wrong signing in. Please try again.";
 }
 
 const REMEMBER_KEY = "wearabledev_remembered_email";
@@ -68,6 +68,20 @@ export default function LoginPage() {
       router.push("/");
     } catch (err) {
       console.error("[login] auth failed:", err);
+      setError(friendlyLoginError(err));
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleDemoSignIn = async () => {
+    setError(null);
+    setLoading(true);
+    try {
+      await login(null, null, true);
+      router.push("/");
+    } catch (err) {
+      console.error("[login] demo login failed:", err);
       setError(friendlyLoginError(err));
     } finally {
       setLoading(false);
@@ -133,10 +147,7 @@ export default function LoginPage() {
                   background: "var(--bg-void, #f8fafc)",
                   color: "var(--text-primary, #1e293b)",
                   fontSize: 14, fontFamily: "inherit", outline: "none",
-                  transition: "border 0.15s",
                 }}
-                onFocus={e => e.target.style.borderColor = "#00c8ff"}
-                onBlur={e => e.target.style.borderColor = "var(--border, #e2e8f0)"}
               />
             </div>
 
@@ -150,33 +161,31 @@ export default function LoginPage() {
                   type={showPassword ? "text" : "password"}
                   value={password} onChange={e => setPassword(e.target.value)}
                   required
+                  placeholder="••••••••"
                   style={{
                     width: "100%", boxSizing: "border-box",
-                    padding: "10px 40px 10px 12px", borderRadius: 8,
+                    padding: "10px 36px 10px 12px", borderRadius: 8,
                     border: "1px solid var(--border, #e2e8f0)",
                     background: "var(--bg-void, #f8fafc)",
                     color: "var(--text-primary, #1e293b)",
                     fontSize: 14, fontFamily: "inherit", outline: "none",
-                    transition: "border 0.15s",
                   }}
-                  onFocus={e => e.target.style.borderColor = "#00c8ff"}
-                  onBlur={e => e.target.style.borderColor = "var(--border, #e2e8f0)"}
                 />
                 <button
                   type="button"
-                  onClick={() => setShowPassword(v => !v)}
+                  onClick={() => setShowPassword(p => !p)}
                   aria-label={showPassword ? "Hide password" : "Show password"}
-                  title={showPassword ? "Hide password" : "Show password"}
                   style={{
-                    position: "absolute", right: 4, top: "50%", transform: "translateY(-50%)",
-                    width: 32, height: 32, display: "flex", alignItems: "center", justifyContent: "center",
-                    background: "none", border: "none", cursor: "pointer",
-                    color: "var(--text-muted, #94a3b8)", borderRadius: 6,
+                    position: "absolute", right: 8, top: "50%",
+                    transform: "translateY(-50%)",
+                    background: "none", border: "none",
+                    cursor: "pointer", color: "var(--text-muted, #94a3b8)",
+                    padding: 4, display: "flex", alignItems: "center",
                   }}
                 >
                   {showPassword ? (
                     <svg width="18" height="18" viewBox="0 0 24 24" fill="none">
-                      <path d="M3 3l18 18M10.6 10.6a2.5 2.5 0 003.53 3.53M9.36 5.6A10.4 10.4 0 0112 5.5c5.5 0 9 5 9 6.5a10.9 10.9 0 01-3.06 3.65M6.4 6.9C3.9 8.5 2.5 11 2.5 12c1 1.6 3.2 4 5.9 5.2a10.4 10.4 0 003.6.8"
+                      <path d="M2 2l20 20M9.9 9.9a3 3 0 004.2 4.2M3 12s3.6-7 9-7c2 0 3.8.7 5.2 1.7M21 12s-3.6 7-9 7a9.7 9.7 0 01-5.2-1.7"
                         stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" />
                     </svg>
                   ) : (
@@ -225,6 +234,30 @@ export default function LoginPage() {
               }}
             >
               {loading ? "SIGNING IN…" : "SIGN IN"}
+            </button>
+
+            <div style={{ display: "flex", alignItems: "center", gap: 10, margin: "14px 0 2px" }}>
+              <div style={{ flex: 1, height: 1, background: "var(--border, #e2e8f0)" }} />
+              <span style={{ fontSize: 11, color: "var(--text-muted, #94a3b8)", textTransform: "uppercase", fontWeight: 600 }}>or</span>
+              <div style={{ flex: 1, height: 1, background: "var(--border, #e2e8f0)" }} />
+            </div>
+
+            <button
+              type="button"
+              disabled={loading}
+              onClick={handleDemoSignIn}
+              style={{
+                padding: "10px", borderRadius: 8,
+                border: "1px solid var(--border, #cbd5e1)",
+                background: "transparent",
+                color: "var(--text-primary, #1e293b)",
+                fontWeight: 600, fontSize: 12,
+                letterSpacing: "0.04em", cursor: loading ? "not-allowed" : "pointer",
+                fontFamily: "inherit",
+                transition: "background 0.15s, border-color 0.15s",
+              }}
+            >
+              SIGN IN WITH DEMO MODE (OFFLINE)
             </button>
           </form>
         </div>

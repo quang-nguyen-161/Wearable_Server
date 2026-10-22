@@ -1,31 +1,39 @@
 // hooks/useTbWebSocket.js
-// Batches incoming WebSocket messages and flushes to state at 30fps (every ~33ms)
-// so the chart renders smoothly instead of thrashing on every individual point.
+// Architecture v2 Server-Mediated Live Telemetry Hook.
+// Replaces direct browser-to-TB WSS with server-mediated cursor polling (every 1s)
+// and smooth 60fps render loop with automatic 5s Freshness Window timeout.
+// Preserves exact return shape: { vitals, ecgData, lastBatchTs, connected, lastUpdate }.
 
 import { useEffect, useRef, useState, useCallback } from "react";
 import { parseWaveformBatch } from "../lib/thingsboard";
+import { mergeVitalsMonotonic } from "../lib/mergeVitals.mjs";
 
-const TB_WS_URL = process.env.NEXT_PUBLIC_TB_WS_URL;
-const FLUSH_MS  = 16;    // ~60fps render rate
+const FLUSH_MS = 16;              // ~60fps render rate
+const POLL_INTERVAL_MS = 1000;    // Poll server-mediated API every 1s
+const FRESHNESS_TIMEOUT_MS = 5000;// Automatic stale detection after 5s
+const INITIAL_SKEW_MS = 20000;    // Tolerance for PC vs SNTP clock skew on initial mount
 
 export function useTbWebSocket(deviceId, tbToken, ecgSampleFreq = 250) {
-  // Updated whenever ecgSampleFreq prop changes — refs keep handleMessage/flushLoop stable
   const sampleIntervalMsRef = useRef(Math.round(1000 / ecgSampleFreq));
-  // Buffer 65s so the 60s display window always has data; cap at 20k to avoid memory pressure
   const maxPointsRef        = useRef(Math.min(20000, Math.max(1500, ecgSampleFreq * 65)));
+
   useEffect(() => {
     sampleIntervalMsRef.current = Math.round(1000 / ecgSampleFreq);
     maxPointsRef.current        = Math.min(20000, Math.max(1500, ecgSampleFreq * 65));
   }, [ecgSampleFreq]);
 
-  const wsRef       = useRef(null);
-  const activeRef   = useRef(false);
-  const flushRef    = useRef(null);
+  const activeRef       = useRef(false);
+  const flushRef        = useRef(null);
+  const pollTimerRef    = useRef(null);
+  const abortCtrlRef    = useRef(null);
 
   // Pending buffers — accumulate between flushes, never trigger renders directly
   const pendingEcg      = useRef([]);
   const pendingVitals   = useRef({});
-  const lastBatchTsRef  = useRef(null); // updated when any ECG data arrives
+  const lastBatchTsRef  = useRef(null);
+  const lastActivityRef = useRef(0);
+  const lastPollSuccessLocalTimeRef = useRef(0);
+  const requestGenRef   = useRef(0);
 
   const [vitals,      setVitals]      = useState({});
   const [ecgData,     setEcgData]     = useState([]);
@@ -33,25 +41,30 @@ export function useTbWebSocket(deviceId, tbToken, ecgSampleFreq = 250) {
   const [connected,   setConnected]   = useState(false);
   const [lastUpdate,  setLastUpdate]  = useState(null);
 
-  // ── Flush pending data to React state at 30fps ──────────────────────
+  // ── Flush pending data to React state at 60fps ──────────────────────
   const startFlushLoop = useCallback(() => {
     if (flushRef.current) return;
     flushRef.current = setInterval(() => {
-      // Vitals
+      // 1. Freshness window check: if no fresh sample within FRESHNESS_TIMEOUT_MS of local polling, mark disconnected
+      const now = Date.now();
+      if (lastPollSuccessLocalTimeRef.current > 0 && (now - lastPollSuccessLocalTimeRef.current) >= FRESHNESS_TIMEOUT_MS) {
+        setConnected(false);
+      }
+
+      // 2. Vitals flush with monotonic timestamp guard
       if (Object.keys(pendingVitals.current).length > 0) {
         const snap = { ...pendingVitals.current };
         pendingVitals.current = {};
-        setVitals(prev => ({ ...prev, ...snap }));
+        setVitals(prev => mergeVitalsMonotonic(prev, snap));
         setLastUpdate(new Date());
       }
 
-      // ECG
+      // 3. ECG flush
       if (pendingEcg.current.length > 0) {
         const pts = pendingEcg.current.splice(0).sort((a, b) => a.ts - b.ts);
         const cap = maxPointsRef.current;
         setEcgData(prev => {
           const lastTs = prev.length ? prev[prev.length - 1].ts : 0;
-          // Drop any points older than or equal to last known timestamp (avoid overlaps)
           const fresh = pts.filter(p => p.ts > lastTs);
           if (fresh.length === 0) return prev;
           const next = [...prev, ...fresh];
@@ -59,7 +72,7 @@ export function useTbWebSocket(deviceId, tbToken, ecgSampleFreq = 250) {
         });
       }
 
-      // lastBatchTs — flush to state so noSignal logic in index.js can detect stale signal
+      // 4. lastBatchTs flush
       if (lastBatchTsRef.current !== null) {
         setLastBatchTs(lastBatchTsRef.current);
         lastBatchTsRef.current = null;
@@ -74,102 +87,154 @@ export function useTbWebSocket(deviceId, tbToken, ecgSampleFreq = 250) {
     }
   }, []);
 
-  // ── Parse incoming TB message into pending buffers ──────────────────
-  const handleMessage = useCallback((event) => {
+  // ── Server-mediated polling loop (1 Hz) ─────────────────────────────
+  const pollTelemetry = useCallback(async (targetDeviceId) => {
+    if (!activeRef.current) return;
+    const reqGen = ++requestGenRef.current;
+
     try {
-      const msg  = JSON.parse(event.data);
-      if (msg.errorCode && msg.errorCode !== 0) {
-        console.error("[WS] TB error:", msg.errorMsg);
-        return;
+      abortCtrlRef.current = new AbortController();
+      const res = await fetch(`/api/telemetry/latest?deviceId=${encodeURIComponent(targetDeviceId)}`, {
+        signal: abortCtrlRef.current.signal,
+        headers: tbToken ? { "x-tb-token": tbToken } : {},
+      });
+
+      if (!res.ok) {
+        throw new Error(`HTTP ${res.status}`);
       }
 
-      const data = msg.data || msg.latestValues;
-      if (!data) return;
+      const json = await res.json();
+      if (!activeRef.current || reqGen !== requestGenRef.current) return;
 
-      // Vitals — keep latest value only
+      const data = json.data || {};
+      const now = Date.now();
+
+      let hasRecentSample = false;
+
+      // Extract vitals: support both { value, ts } object and array-of-tuples [[ts, val]]
       for (const key of ["ppgHeartRate", "ecgHeartRate", "spo2", "temperature"]) {
-        const entries = data[key];
-        if (entries?.length) {
-          const [ts, val] = entries[entries.length - 1];
-          pendingVitals.current[key] = { value: parseFloat(val), ts };
+        const item = data[key];
+        if (!item) continue;
+        let ts, val;
+        if (Array.isArray(item) && item.length > 0) {
+          if (Array.isArray(item[0])) {
+            [ts, val] = item[0];
+          } else if (typeof item[0] === "object" && item[0] !== null) {
+            ts = item[0].ts;
+            val = item[0].value;
+          }
+        } else if (typeof item === "object" && item !== null) {
+          ts = item.ts;
+          val = item.value;
+        }
+
+        if (ts !== undefined && val !== undefined) {
+          const numVal = parseFloat(val);
+          const tsNum = Number(ts);
+          if (!isNaN(numVal) && !isNaN(tsNum)) {
+            pendingVitals.current = mergeVitalsMonotonic(pendingVitals.current, {
+              [key]: { value: numVal, ts: tsNum }
+            });
+            // Passive freshness: sample is genuinely fresh or advancing in real time
+            const skewMs = Math.abs(now - tsNum);
+            const isFresh = skewMs <= INITIAL_SKEW_MS;
+            const isAdvancing = lastActivityRef.current > 0 && tsNum > lastActivityRef.current;
+            if (isFresh || isAdvancing) {
+              hasRecentSample = true;
+            }
+            lastActivityRef.current = Math.max(lastActivityRef.current, tsNum);
+          }
         }
       }
 
-      // ECG — individual timestamped points posted directly from firmware
-      const ecgPts = data["ecg"] || [];
-      for (const [ts, val] of ecgPts) pendingEcg.current.push({ ts, value: parseFloat(val) });
-      if (ecgPts.length > 0) lastBatchTsRef.current = Date.now();
-
-      // ecg_batch — JSON-string array from HTTPS POST
-      const ecgEntry = data["ecg_batch"]?.[0];
-      if (ecgEntry) {
-        const batchTs    = ecgEntry?.[0] ?? Date.now();
-        const ecgRaw     = ecgEntry?.[1] ?? ecgEntry?.value;
-        const ecgSamples = parseWaveformBatch(ecgRaw, batchTs, sampleIntervalMsRef.current);
-        for (const pt of ecgSamples) pendingEcg.current.push(pt);
-        lastBatchTsRef.current = Date.now();
+      // Extract ECG batch: support { value, ts } object or [{ ts, value }] array
+      let ecgRaw = null;
+      let batchTs = null;
+      const ecgItem = data["ecg_batch"];
+      if (ecgItem) {
+        if (Array.isArray(ecgItem) && ecgItem.length > 0) {
+          const first = ecgItem[0];
+          if (Array.isArray(first)) {
+            batchTs = first[0];
+            ecgRaw = first[1];
+          } else if (typeof first === "object" && first !== null) {
+            batchTs = first.ts;
+            ecgRaw = first.value;
+          }
+        } else if (typeof ecgItem === "object" && ecgItem !== null) {
+          batchTs = ecgItem.ts;
+          ecgRaw = ecgItem.value;
+        }
       }
 
-    } catch (err) {
-      console.error("[WS] Parse error:", err.message);
-    }
-  }, []);
+      if (ecgRaw && batchTs !== null && batchTs !== undefined) {
+        const tsNum = Number(batchTs);
+        if (!isNaN(tsNum)) {
+          // Avoid re-processing the exact same batch if timestamp hasn't advanced
+          if (tsNum !== lastBatchTsRef.current) {
+            lastBatchTsRef.current = tsNum;
+            const ecgSamples = parseWaveformBatch(ecgRaw, tsNum, sampleIntervalMsRef.current);
+            for (const pt of ecgSamples) {
+              pendingEcg.current.push(pt);
+            }
+          }
+          const isFresh = Math.abs(now - tsNum) <= INITIAL_SKEW_MS;
+          const isAdvancing = lastActivityRef.current > 0 && tsNum > lastActivityRef.current;
+          if (isFresh || isAdvancing) {
+            hasRecentSample = true;
+          }
+          lastActivityRef.current = Math.max(lastActivityRef.current, tsNum);
+        }
+      }
 
-  // ── Connect / disconnect ────────────────────────────────────────────
-  useEffect(() => {
-    if (!deviceId || !tbToken || !TB_WS_URL) {
-      console.warn("[WS] Missing:", { deviceId: !!deviceId, token: !!tbToken, url: !!TB_WS_URL });
-      return;
+      if (hasRecentSample) {
+        lastPollSuccessLocalTimeRef.current = Date.now();
+        setConnected(true);
+      }
+    } catch (err) {
+      if (err.name !== "AbortError") {
+        console.warn("[live-polling] Poll error:", err.message);
+      }
     }
-    if (activeRef.current) return;
+  }, [tbToken]);
+
+  useEffect(() => {
+    if (!deviceId) return;
+
     activeRef.current = true;
 
-    // Reset all state and buffers
+    // Reset all state and buffers on device or patient change
     setVitals({});
     setEcgData([]);
     setLastBatchTs(null);
-    pendingEcg.current    = [];
-    pendingVitals.current = {};
+    setConnected(false);
+    pendingEcg.current     = [];
+    pendingVitals.current  = {};
     lastBatchTsRef.current = null;
+    lastActivityRef.current = 0;
 
-    console.log("[WS] Connecting to device:", deviceId);
-    const ws = new WebSocket(`${TB_WS_URL}?token=${tbToken}`);
-    wsRef.current = ws;
+    startFlushLoop();
 
-    ws.onopen = () => {
-      setConnected(true);
-      console.log("[WS] Connected");
+    // Initial fetch
+    pollTelemetry(deviceId);
 
-      ws.send(JSON.stringify({
-        tsSubCmds: [{
-          entityType: "DEVICE",
-          entityId:   deviceId,
-          scope:      "LATEST_TELEMETRY",
-          cmdId:      10,
-        }],
-        historyCmds: [],
-        attrSubCmds: [],
-      }));
-
-      startFlushLoop();
-      console.log("[WS] Subscribed + flush loop started @", FLUSH_MS + "ms");
-    };
-
-    ws.onmessage = handleMessage;
-    ws.onerror   = (e) => console.error("[WS] Error:", e);
-    ws.onclose   = (e) => {
-      setConnected(false);
-      activeRef.current = false;
-      stopFlushLoop();
-      console.warn("[WS] Closed:", e.code, e.reason || "");
-    };
+    // Schedule 1 Hz polling
+    pollTimerRef.current = setInterval(() => {
+      pollTelemetry(deviceId);
+    }, POLL_INTERVAL_MS);
 
     return () => {
       activeRef.current = false;
       stopFlushLoop();
-      if (ws.readyState === WebSocket.OPEN) ws.close(1000, "cleanup");
+      if (pollTimerRef.current) {
+        clearInterval(pollTimerRef.current);
+        pollTimerRef.current = null;
+      }
+      if (abortCtrlRef.current) {
+        abortCtrlRef.current.abort();
+      }
     };
-  }, [deviceId, tbToken, handleMessage, startFlushLoop, stopFlushLoop]);
+  }, [deviceId, pollTelemetry, startFlushLoop, stopFlushLoop]);
 
   return { vitals, ecgData, lastBatchTs, connected, lastUpdate };
 }

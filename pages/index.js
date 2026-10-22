@@ -12,11 +12,13 @@ import PrintModal from "../components/PrintModal";
 import OtaModal from "../components/OtaModal";
 import AssignModal from "../components/AssignModal";
 import PatientModal from "../components/PatientModal";
+import LiveVitalsPanel from "../components/LiveVitalsPanel";
+import { getFreshVitalValue } from "../lib/vitalsFreshness.mjs";
 import { useNotifications } from "../hooks/useNotifications";
 import { useTrends } from "../hooks/useTrends";
 import { useSettings, SettingsContext } from "../context/SettingsContext";
 import { useTbAuth } from "../context/TbAuthContext";
-import { getDevices, getPatientInfo, getDeviceAttributes, saveDeviceAttributes, createDevice, addDeviceRelation, deleteDevice, GATEWAY_ID } from "../lib/tbBrowserClient";
+import { getDevices, getPatientInfo, saveDeviceAttributes, createDevice, addDeviceRelation, deleteDevice, GATEWAY_ID } from "../lib/tbBrowserClient";
 
 /* ── Vital definitions ─────────────────────────────────────────────── */
 const VITALS = [
@@ -426,7 +428,7 @@ export default function Dashboard() {
   }, [tbAuthToken]);
 
   /* ── Per-device settings (thresholds, vitalInterval, ecgSampleFreq) ── */
-  const { settings, loadSettings } = useSettings(selectedDeviceId);
+  const { settings, loadSettings, updateSettings } = useSettings(selectedDeviceId);
   useEffect(() => { loadSettings(); }, [selectedDeviceId, loadSettings]);
 
   /* ── Load settings for all devices so OverviewGrid can use per-device thresholds ── */
@@ -448,11 +450,12 @@ export default function Dashboard() {
     lastUpdate,
   } = useTbWebSocket(selectedDeviceId, tbToken, settings.ecgSampleFreq);
 
-  /* ── Periodic re-render tick so getValue() can detect stale vitals ── */
-  const [now, setNow] = useState(Date.now());
-  useEffect(() => {
-    const t = setInterval(() => setNow(Date.now()), 1000);
-    return () => clearInterval(t);
+  /* ── Alert status callback from LiveVitalsPanel (Task 5: isolated 1s clock) ── */
+  const handleAlertChange = useCallback((deviceId, hasAlert) => {
+    setDeviceAlerts(prev => {
+      if (prev[deviceId] === hasAlert) return prev; // Do not trigger root re-render if alert status is unchanged
+      return { ...prev, [deviceId]: hasAlert };
+    });
   }, []);
 
   /* ── No-signal detection (CoAP waveform batches) ── */
@@ -479,22 +482,7 @@ export default function Dashboard() {
     setVitalsMap(prev => ({ ...prev, [selectedDeviceId]: vitals }));
   }, [vitals, selectedDeviceId]);
 
-  /* ── Track per-device alerts from live vitals ── */
-  useEffect(() => {
-    if (!selectedDeviceId || !vitals) return;
-    const { thresholds } = settings;
-    const ppgHr = getValue("ppgHeartRate");
-    const ecgHr = getValue("ecgHeartRate");
-    const spo2  = getValue("spo2");
-    const temp  = getValue("temperature");
-    const hasAlert =
-      selectedDevice?.online !== false &&
-      ((ppgHr != null && (ppgHr < thresholds.ppgHeartRate.dangerMin || ppgHr > thresholds.ppgHeartRate.dangerMax)) ||
-      (ecgHr != null && (ecgHr < thresholds.ecgHeartRate.dangerMin || ecgHr > thresholds.ecgHeartRate.dangerMax)) ||
-      (spo2  != null && (spo2  < thresholds.spo2.dangerMin         || spo2  > thresholds.spo2.dangerMax))         ||
-      (temp  != null && (temp  < thresholds.temperature.dangerMin  || temp  > thresholds.temperature.dangerMax)));
-    setDeviceAlerts((prev) => ({ ...prev, [selectedDeviceId]: hasAlert }));
-  }, [vitals, selectedDeviceId, settings, selectedDevice, now]);
+
 
   /* ── Fetch device list ── */
   const hasDevicesRef = useRef(false);
@@ -515,19 +503,29 @@ export default function Dashboard() {
         if (prev && list.some(d => d.id === prev)) return prev; // keep current/restored selection
         return list.length > 0 ? list[0].id : prev;
       });
-      // Load showEcg + deviceMode attributes for every device in parallel
-      const results = await Promise.allSettled(list.map(d => getDeviceAttributes(tbAuthToken, d.id)));
-      const ecgMap  = {};
-      const modeMap = {};
-      results.forEach((r, i) => {
-        const v = r.status === "fulfilled" ? r.value : {};
-        // showEcg may be numeric 1/0 (current) or legacy boolean; default on.
-        const se = v.showEcg;
-        ecgMap[list[i].id]  = (se === undefined || se === null) ? true : (se !== 0 && se !== false);
-        modeMap[list[i].id] = v.deviceMode ?? 0;
+      // Populate showEcg + deviceMode directly from device payload (Task 6: eliminated N getDeviceAttributes queries)
+      setEcgEnabledMap(prev => {
+        const updated = { ...prev };
+        list.forEach(d => {
+          if (d.showEcg !== undefined && d.showEcg !== null) {
+            updated[d.id] = (d.showEcg !== 0 && d.showEcg !== false && d.showEcg !== "0" && d.showEcg !== "false");
+          } else if (updated[d.id] === undefined) {
+            updated[d.id] = true;
+          }
+        });
+        return updated;
       });
-      setEcgEnabledMap(ecgMap);
-      setDeviceModeMap(modeMap);
+      setDeviceModeMap(prev => {
+        const updated = { ...prev };
+        list.forEach(d => {
+          if (d.deviceMode !== undefined && d.deviceMode !== null) {
+            updated[d.id] = Number(d.deviceMode) || 0;
+          } else if (updated[d.id] === undefined) {
+            updated[d.id] = 0;
+          }
+        });
+        return updated;
+      });
       hasDevicesRef.current = true;
     } catch (err) {
       console.error("Device list fetch error:", err);
@@ -545,22 +543,31 @@ export default function Dashboard() {
       // Stored numeric so the gateways' int parse works (firmware ECG stream flag)
       await saveDeviceAttributes(tbAuthToken, deviceId, "SHARED_SCOPE", { showEcg: newVal ? 1 : 0 });
     } catch (e) {
-      console.error("Failed to save showEcg:", e);
-      setEcgEnabledMap(prev => ({ ...prev, [deviceId]: currentlyEnabled }));
+      console.warn("Failed to save showEcg remotely:", e);
     }
   }, [tbAuthToken]);
 
   /* ── Set operating mode for a device (0=Continuous, 1=Periodic) ── */
   const handleSetDeviceMode = useCallback(async (deviceId, mode) => {
-    const prev = deviceModeMap[deviceId] ?? 0;
     setDeviceModeMap(p => ({ ...p, [deviceId]: mode }));
     try {
       await saveDeviceAttributes(tbAuthToken, deviceId, "SHARED_SCOPE", { deviceMode: mode });
     } catch (e) {
-      console.error("Failed to save deviceMode:", e);
-      setDeviceModeMap(p => ({ ...p, [deviceId]: prev }));
+      console.warn("Failed to save deviceMode remotely:", e);
     }
-  }, [tbAuthToken, deviceModeMap]);
+  }, [tbAuthToken]);
+
+  /* ── Set vital report interval for a device (1s, 2s, 5s) ── */
+  const handleSetVitalInterval = useCallback(async (deviceId, intervalSec) => {
+    if (updateSettings) {
+      updateSettings({ ...settings, vitalInterval: intervalSec });
+    }
+    try {
+      await saveDeviceAttributes(tbAuthToken, deviceId, "SHARED_SCOPE", { vitalInterval: intervalSec });
+    } catch (e) {
+      console.warn("Failed to save vitalInterval remotely:", e);
+    }
+  }, [tbAuthToken, settings, updateSettings]);
 
   /* ── Delete a node device ── */
   const handleDeleteNode = useCallback(async (deviceId, deviceName) => {
@@ -621,11 +628,7 @@ export default function Dashboard() {
   // A vital is "stale" (sensor/mode stopped reporting it) if its last update is
   // older than 3x the vital interval — show "--" instead of the frozen last value.
   const getValue = (key) => {
-    const entry = vitals[key];
-    if (!entry || entry.value == null) return null;
-    const staleMs = Math.max(settings.vitalInterval * 3, 10000);
-    if (now - entry.ts > staleMs) return null;
-    return entry.value;
+    return getFreshVitalValue(vitals?.[key], Date.now(), settings.vitalInterval);
   };
 
   const formatTime = (date) =>
@@ -756,8 +759,8 @@ export default function Dashboard() {
 
           <div className="sidebar-bottom">
             <div className="sidebar-status">
-              <span className={`status-dot ${connected ? "" : "offline"}`} />
-              <span className="sidebar-status-text">{connected ? "LIVE" : "OFFLINE"}</span>
+              <span className={`status-dot ${devicesLoading ? "connecting" : (connected ? "" : "offline")}`} />
+              <span className="sidebar-status-text">{devicesLoading ? "CONNECTING..." : (connected ? "LIVE" : "OFFLINE")}</span>
             </div>
             {lastUpdate && (
               <div className="sidebar-last-update">Updated {formatTime(lastUpdate)}</div>
@@ -829,8 +832,8 @@ export default function Dashboard() {
                         {device.patientName || device.name}
                       </div>
                       <div className="device-card-sub">{device.name}</div>
-                      <div className={`device-online-pill ${device.online === false ? "offline" : ""}`}>
-                        {device.online === false ? "OFFLINE" : "LIVE"}
+                      <div className={`device-online-pill ${device.online ? "" : "offline"}`}>
+                        {device.online ? "LIVE" : "OFFLINE"}
                       </div>
                     </button>
                     <button
@@ -933,6 +936,25 @@ export default function Dashboard() {
                   <span className="mode-label">ECG {ecgOn ? "ON" : "OFF"}</span>
                 </button>
               </div>
+
+              {/* Quick vital reporting interval selector */}
+              <div className="device-mode-tabs" style={{ marginLeft: "10px" }}>
+                <span className="device-mode-label" style={{ alignSelf: "center", marginRight: "4px", fontSize: "10px", fontWeight: "700" }}>RATE</span>
+                {[1, 2, 5].map((sec) => {
+                  const ms = sec * 1000;
+                  const isActive = (settings.vitalInterval || 1000) === ms;
+                  return (
+                    <button
+                      key={sec}
+                      className={`device-mode-tab${isActive ? " device-mode-tab--active" : ""}`}
+                      onClick={() => handleSetVitalInterval(selectedDeviceId, ms)}
+                      title={`Configure node reporting interval to ${sec}s (${ms}ms)`}
+                    >
+                      <span className="mode-label">{sec}s</span>
+                    </button>
+                  );
+                })}
+              </div>
               {mode === 1 && (
                 <div className="device-mode-hint">
                   <strong>{intervalLabel}</strong>
@@ -982,47 +1004,18 @@ export default function Dashboard() {
             </div>
           )}
 
-          {/* Vital cards */}
-          {selectedDeviceId &&
-            VITALS.map((v, i) => {
-              const trend = trends[v.key];
-              const trendIcon  = trend === "up" ? "↑" : trend === "down" ? "↓" : null;
-              const trendColor = trend === "up" ? "#ef4444" : trend === "down" ? "#3b82f6" : null;
-              const t = settings.thresholds[v.key];
-              return (
-                <div
-                  key={`${selectedDeviceId}-${v.key}`}
-                  onClick={() => setVitalModal({ vitalKey: v.key })}
-                  style={{ cursor: "pointer", position: "relative" }}
-                  title="Click to view history"
-                >
-                  {trendIcon && (
-                    <div style={{
-                      position: "absolute", top: 10, right: 12,
-                      fontSize: 18, fontWeight: 700,
-                      color: trendColor, zIndex: 2,
-                      lineHeight: 1, pointerEvents: "none",
-                    }}>{trendIcon}</div>
-                  )}
-                  <VitalCard
-                    label={v.label}
-                    icon={v.icon}
-                    unit={v.unit}
-                    color={v.color}
-                    min={t?.normalMin ?? v.min}
-                    max={t?.normalMax ?? v.max}
-                    warnMin={t?.warnMin ?? v.warnMin}
-                    warnMax={t?.warnMax ?? v.warnMax}
-                    dangerMin={t?.dangerMin ?? v.dangerMin}
-                    dangerMax={t?.dangerMax ?? v.dangerMax}
-                    value={getValue(v.key)}
-                    loading={!connected && !getValue(v.key)}
-                    offline={selectedDevice?.online === false}
-                    animDelay={i * 60}
-                  />
-                </div>
-              );
-            })}
+          {/* Vital cards (Task 5: Isolated 1s freshness tick in LiveVitalsPanel) */}
+          <LiveVitalsPanel
+            selectedDeviceId={selectedDeviceId}
+            vitals={vitals}
+            trends={trends}
+            settings={settings}
+            connected={connected}
+            selectedDevice={selectedDevice}
+            vitalsDef={VITALS}
+            onOpenVitalModal={setVitalModal}
+            onAlertChange={handleAlertChange}
+          />
 
           {/* ECG Signal — live HTTPS waveform, each sample timestamped */}
           {selectedDeviceId && ecgEnabledMap[selectedDeviceId] !== false && (

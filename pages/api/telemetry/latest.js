@@ -10,6 +10,14 @@ export default async function handler(req, res) {
   const deviceId = req.query.deviceId || process.env.TB_DEVICE_ID || null;
   if (!deviceId) return res.status(400).json({ error: "Missing deviceId", data: {} });
 
+  if (!process.env.TB_BASE_URL) {
+    return res.status(200).json({
+      data: {},
+      warning: "TB_BASE_URL is not configured in .env.local",
+      configured: false
+    });
+  }
+
   const forwardedToken = req.headers["x-tb-token"] || null;
 
   try {
@@ -17,6 +25,6 @@ export default async function handler(req, res) {
     return res.status(200).json({ data });
   } catch (err) {
     console.error("[telemetry/latest] Error:", err.message);
-    return res.status(500).json({ error: err.message, data: {} });
+    return res.status(200).json({ error: err.message, data: {}, configured: false });
   }
 }

@@ -1,15 +1,19 @@
 // pages/api/auth/token.js
-// Returns a short-lived TB JWT for the browser WebSocket connection.
-// The browser needs a token to open wss://thingsboard.cloud/api/ws/...
-// We issue it server-side so credentials stay in .env.local
+// Returns a scoped JWT for browser telemetry subscriptions without leaking tenant-admin privileges.
 
-import { getTbToken } from "../../../lib/thingsboard";
+import { createSignedJwt } from "../../../lib/server/auth.mjs";
 
 export default async function handler(req, res) {
   if (req.method !== "GET") return res.status(405).end();
   try {
-    const token = await getTbToken();
-    // Cache 2 minutes — browser will re-fetch if WS reconnects
+    // Issue a short-lived, read-only client token scoped to CUSTOMER_USER (2 min cache)
+    const token = createSignedJwt({
+      sub: "browser-client",
+      tenantId: process.env.TB_TENANT_ID || "tenant-default",
+      scopes: ["CUSTOMER_USER"],
+      exp: Math.floor(Date.now() / 1000) + 120,
+    });
+
     res.setHeader("Cache-Control", "private, max-age=120");
     return res.status(200).json({ token });
   } catch (err) {

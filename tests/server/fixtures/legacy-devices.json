@@ -1,0 +1,49 @@
+{
+  "tenantId": "tenant-alpha-01",
+  "devices": [
+    {
+      "id": { "id": "20c35db0-c64a-11f1-a73c-47ac28e322d1", "entityType": "DEVICE" },
+      "name": "Node1",
+      "type": "wearable-sensor",
+      "serverAttributes": {
+        "macAddress": "F0:F5:BD:11:22:33",
+        "firmware": "v1.2.0",
+        "slot": 1
+      },
+      "telemetryCount": 120,
+      "telemetryChecksum": "a1b2c3d4e5f60718"
+    },
+    {
+      "id": { "id": "31d46ec1-d75b-22f2-b84d-58bd39f433e2", "entityType": "DEVICE" },
+      "name": "Node2",
+      "type": "wearable-sensor",
+      "serverAttributes": {
+        "room": "ICU-2",
+        "slot": 2
+      },
+      "telemetryCount": 45,
+      "telemetryChecksum": "9876543210fedcba"
+    },
+    {
+      "id": { "id": "42e57fd2-e86c-33f3-c95e-69ce40a544f3", "entityType": "DEVICE" },
+      "name": "Node3",
+      "type": "wearable-sensor",
+      "serverAttributes": {
+        "macAddress": "F0:F5:BD:44:55:66",
+        "slot": 3
+      },
+      "telemetryCount": 210,
+      "telemetryChecksum": "c3d4e5f60718a1b2"
+    },
+    {
+      "id": { "id": "53f680e3-f97d-44f4-da6f-70df51b65504", "entityType": "DEVICE" },
+      "name": "F0:F5:BD:77:88:99",
+      "type": "wearable-sensor",
+      "serverAttributes": {
+        "macAddress": "F0:F5:BD:77:88:99"
+      },
+      "telemetryCount": 88,
+      "telemetryChecksum": "fedcba9876543210"
+    }
+  ]
+}
