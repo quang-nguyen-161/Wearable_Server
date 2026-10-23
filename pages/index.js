@@ -539,23 +539,43 @@ export default function Dashboard() {
   const handleToggleEcg = useCallback(async (deviceId, currentlyEnabled) => {
     const newVal = !currentlyEnabled;
     setEcgEnabledMap(prev => ({ ...prev, [deviceId]: newVal }));
+    const currentMode = deviceModeMap[deviceId] ?? 0;
+    const devSettings = getSettings ? getSettings(deviceId) : null;
+    const pInterval = devSettings?.periodicInterval ?? (deviceId === selectedDeviceId ? settings?.periodicInterval : 10) ?? 10;
+    const capWindow = devSettings?.captureWindow ?? (deviceId === selectedDeviceId ? settings?.captureWindow : 5) ?? 5;
     try {
-      // Stored numeric so the gateways' int parse works (firmware ECG stream flag)
-      await saveDeviceAttributes(tbAuthToken, deviceId, "SHARED_SCOPE", { showEcg: newVal ? 1 : 0 });
+      // Send complete tuple to avoid overwriting node configuration in gateway downlink synthesizer
+      await saveDeviceAttributes(tbAuthToken, deviceId, "SHARED_SCOPE", {
+        showEcg: newVal ? 1 : 0,
+        ecgEnabled: newVal ? 1 : 0,
+        deviceMode: currentMode,
+        periodicInterval: pInterval,
+        captureWindow: capWindow,
+      });
     } catch (e) {
       console.warn("Failed to save showEcg remotely:", e);
     }
-  }, [tbAuthToken]);
+  }, [tbAuthToken, deviceModeMap, getSettings, selectedDeviceId, settings]);
 
   /* ── Set operating mode for a device (0=Continuous, 1=Periodic) ── */
   const handleSetDeviceMode = useCallback(async (deviceId, mode) => {
     setDeviceModeMap(p => ({ ...p, [deviceId]: mode }));
+    const currentEcg = ecgEnabledMap[deviceId] !== false;
+    const devSettings = getSettings ? getSettings(deviceId) : null;
+    const pInterval = devSettings?.periodicInterval ?? (deviceId === selectedDeviceId ? settings?.periodicInterval : 10) ?? 10;
+    const capWindow = devSettings?.captureWindow ?? (deviceId === selectedDeviceId ? settings?.captureWindow : 5) ?? 5;
     try {
-      await saveDeviceAttributes(tbAuthToken, deviceId, "SHARED_SCOPE", { deviceMode: mode });
+      await saveDeviceAttributes(tbAuthToken, deviceId, "SHARED_SCOPE", {
+        deviceMode: mode,
+        showEcg: currentEcg ? 1 : 0,
+        ecgEnabled: currentEcg ? 1 : 0,
+        periodicInterval: pInterval,
+        captureWindow: capWindow,
+      });
     } catch (e) {
       console.warn("Failed to save deviceMode remotely:", e);
     }
-  }, [tbAuthToken]);
+  }, [tbAuthToken, ecgEnabledMap, getSettings, selectedDeviceId, settings]);
 
   /* ── Set vital report interval for a device (1s, 2s, 5s) ── */
   const handleSetVitalInterval = useCallback(async (deviceId, intervalSec) => {
