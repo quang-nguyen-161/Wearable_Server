@@ -476,6 +476,11 @@ export default function Dashboard() {
   const selectedDevice = devices.find(d => d.id === selectedDeviceId);
   useNotifications(selectedDevice?.name, vitals, notificationsOn, settings.thresholds);
 
+  /* ── Synchronize selected device online state in real-time with useTbWebSocket ── */
+  const displayDevices = useMemo(() => {
+    return devices.map(d => (d.id === selectedDeviceId ? { ...d, online: connected } : d));
+  }, [devices, selectedDeviceId, connected]);
+
   /* ── Sync vitals into vitalsMap for OverviewGrid ── */
   useEffect(() => {
     if (!selectedDeviceId || !vitals) return;
@@ -829,10 +834,10 @@ export default function Dashboard() {
                   <div key={i} className="device-card-skeleton" />
                 ))}
               </div>
-            ) : devices.length === 0 ? (
+            ) : displayDevices.length === 0 ? (
               <div className="no-devices">No devices found. Check /api/devices.</div>
             ) : (
-              devices.map((device) => {
+              displayDevices.map((device) => {
                 const isSelected = device.id === selectedDeviceId;
                 const hasAlert = deviceAlerts[device.id];
                 return (

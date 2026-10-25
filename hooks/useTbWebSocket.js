@@ -112,7 +112,7 @@ export function useTbWebSocket(deviceId, tbToken, ecgSampleFreq = 250) {
       let hasRecentSample = false;
 
       // Extract vitals: support both { value, ts } object and array-of-tuples [[ts, val]]
-      for (const key of ["ppgHeartRate", "ecgHeartRate", "spo2", "temperature"]) {
+      for (const key of ["ppgHeartRate", "ecgHeartRate", "spo2", "temperature", "battery"]) {
         const item = data[key];
         if (!item) continue;
         let ts, val;
