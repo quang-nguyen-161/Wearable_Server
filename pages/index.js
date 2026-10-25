@@ -62,6 +62,16 @@ const VITALS = [
     warnMin: 35.5, warnMax: 38.5,
     dangerMin: 35.0, dangerMax: 39.5,
   },
+  {
+    key: "battery",
+    label: "BATTERY",
+    icon: "🔋",
+    unit: "%",
+    color: "purple",
+    min: 20, max: 100,
+    warnMin: 15, warnMax: 100,
+    dangerMin: 10, dangerMax: 100,
+  },
 ];
 
 /* ── Signal Modal ────────────────────────────────────────────────────────── */
@@ -859,6 +869,7 @@ export default function Dashboard() {
                       <div className="device-card-sub">{device.name}</div>
                       <div className={`device-online-pill ${device.online ? "" : "offline"}`}>
                         {device.online ? "LIVE" : "OFFLINE"}
+                        {device.battery != null && ` · 🔋${Math.round(device.battery)}%`}
                       </div>
                     </button>
                     <button

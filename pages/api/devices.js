@@ -155,20 +155,25 @@ export default async function handler(req, res) {
           const resolvedPatientName = patientName || attrPatientName || null;
           let isOnline = false;
           let lastActivityTs = 0;
+          let battery = null;
 
           if (process.env.NODE_ENV !== 'test') {
             // Check telemetry freshness across all metrics (Architecture v2 Passive Freshness Window)
             try {
               const telemetry = await tbGet(
                 `/api/plugins/telemetry/DEVICE/${device.id}/values/timeseries`,
-                { keys: "spo2,ecgHeartRate,ppgHeartRate,temperature,ecg_batch", limit: 1 }
+                { keys: "spo2,ecgHeartRate,ppgHeartRate,temperature,battery,ecg_batch", limit: 1 }
               );
-              for (const key of ["spo2", "ecgHeartRate", "ppgHeartRate", "temperature", "ecg_batch"]) {
+              for (const key of ["spo2", "ecgHeartRate", "ppgHeartRate", "temperature", "battery", "ecg_batch"]) {
                 const series = telemetry[key];
                 if (Array.isArray(series) && series.length > 0 && series[0].ts) {
                   const val = series[0].value;
                   if (val !== null && val !== undefined && val !== "") {
                     lastActivityTs = Math.max(lastActivityTs, Number(series[0].ts));
+                    if (key === "battery") {
+                      const bNum = Number(val);
+                      if (!isNaN(bNum)) battery = bNum;
+                    }
                   }
                 }
               }
@@ -216,6 +221,7 @@ export default async function handler(req, res) {
             lastActivityTs: lastActivityTs || undefined,
             showEcg,
             deviceMode,
+            battery: battery !== null ? battery : null,
           };
         } catch (_) {
           return { ...device, online: false };
